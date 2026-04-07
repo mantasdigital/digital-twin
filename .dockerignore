@@ -1,0 +1,7 @@
+# Ignore everything by default
+**
+
+# Include only what's needed for the Railway build
+!Dockerfile
+!railway-entrypoint.sh
+!railway.json

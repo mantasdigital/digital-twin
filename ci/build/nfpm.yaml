@@ -1,0 +1,25 @@
+name: "digital-twin"
+arch: "${NFPM_ARCH}"
+platform: "linux"
+version: "v${VERSION}"
+section: "devel"
+priority: "optional"
+maintainer: "mantasdigital"
+description: |
+  Browser-based VS Code with Claude Code CLI.
+vendor: "mantasdigital"
+homepage: "https://github.com/mantasdigital/digital-twin"
+license: "MIT"
+
+contents:
+  - src: ./ci/build/code-server-nfpm.sh
+    dst: /usr/bin/code-server
+
+  - src: ./ci/build/code-server@.service
+    dst: /usr/lib/systemd/system/code-server@.service
+
+  - src: ./ci/build/code-server-user.service
+    dst: /usr/lib/systemd/user/code-server.service
+
+  - src: ./release-standalone/*
+    dst: /usr/lib/code-server
