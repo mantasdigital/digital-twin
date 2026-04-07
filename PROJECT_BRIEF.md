@@ -27,10 +27,10 @@ A production-ready Railway template providing browser-based VS Code (code-server
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `PASSWORD` | Yes | - | code-server login password |
-| `RUN_AS_USER` | No | `clauder` | Set to `root` for root execution |
-| `CLAUDER_HOME` | No | `/home/clauder` | Volume mount path |
-| `CLAUDER_UID` | No | `1000` | User ID for clauder |
-| `CLAUDER_GID` | No | `1000` | Group ID for clauder |
+| `RUN_AS_USER` | No | `digital-twin` | Set to `root` for root execution |
+| `DIGITAL_TWIN_HOME` | No | `/home/digital-twin` | Volume mount path |
+| `DIGITAL_TWIN_UID` | No | `1000` | User ID for digital-twin |
+| `DIGITAL_TWIN_GID` | No | `1000` | Group ID for digital-twin |
 | `APP_NAME` | No | `Digital Twin` | Login page branding |
 | `WELCOME_TEXT` | No | `Welcome to Digital Twin` | Login page message |
 

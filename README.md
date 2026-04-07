@@ -13,7 +13,7 @@ Deploy a full VS Code development environment in the cloud with Claude Code CLI 
 - **Claude Code CLI Pre-installed** – Start AI-assisted coding immediately with `claude` or `claude-auto` (YOLO mode)
 - **Browser-Based VS Code** – Full IDE experience accessible from any device
 - **Persistent Storage** – Your extensions, settings, and projects survive redeploys
-- **Non-Root Security** – Runs as the `clauder` user with optional sudo access
+- **Non-Root Security** – Runs as the `digital-twin` user with optional sudo access
 - **One-Click Deploy** – Deploy to Railway in 60 seconds
 
 ---
@@ -27,7 +27,7 @@ Click the button above, or:
 1. Go to [Railway Templates](https://railway.com/templates)
 2. Search for "Digital Twin"
 3. Click **Deploy** and set your `PASSWORD`
-4. Attach a volume to `/home/clauder`
+4. Attach a volume to `/home/digital-twin`
 5. Open the generated domain in your browser
 
 ### First Login
@@ -48,21 +48,21 @@ Click the button above, or:
 
 ### Optional Variables
 
-| Variable       | Default                        | Description                              |
-|----------------|--------------------------------|------------------------------------------|
-| `CLAUDER_HOME` | `/home/clauder`                | Volume mount path                        |
-| `RUN_AS_USER`  | `clauder`                      | Set to `root` if you need root access    |
-| `APP_NAME`     | `Digital Twin`                 | Login page title                         |
-| `WELCOME_TEXT` | `Welcome to Digital Twin`      | Login page message                       |
+| Variable             | Default                        | Description                              |
+|----------------------|--------------------------------|------------------------------------------|
+| `DIGITAL_TWIN_HOME`  | `/home/digital-twin`           | Volume mount path                        |
+| `RUN_AS_USER`        | `digital-twin`                 | Set to `root` if you need root access    |
+| `APP_NAME`           | `Digital Twin`                 | Login page title                         |
+| `WELCOME_TEXT`       | `Welcome to Digital Twin`      | Login page message                       |
 
 ### Volume Configuration
 
 > **CRITICAL**: Without a volume, ALL data is lost on every redeploy!
 
-| Setting        | Value            |
-|----------------|------------------|
-| **Mount Path** | `/home/clauder`  |
-| **Size**       | 5GB+ recommended |
+| Setting        | Value                |
+|----------------|----------------------|
+| **Mount Path** | `/home/digital-twin` |
+| **Size**       | 5GB+ recommended     |
 
 ---
 

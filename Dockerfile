@@ -10,7 +10,7 @@ USER root
 # ============================================================================
 # SYSTEM DEPENDENCIES
 # Install gosu, Node.js 22, Python/uv, and essential tools
-# Cache bust: 2026-04-03-v7
+# Cache bust: 2026-04-07-v8
 # ============================================================================
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -37,56 +37,56 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 # ============================================================================
 # PERSISTENCE CONFIGURATION
-# Default to /home/clauder for new deployments
+# Default to /home/digital-twin for new deployments
 # ============================================================================
 
-ENV HOME=/home/clauder
-ENV USER=clauder
+ENV HOME=/home/digital-twin
+ENV USER=digital-twin
 
 # XDG Base Directory Specification
-ENV XDG_DATA_HOME=/home/clauder/.local/share
-ENV XDG_CONFIG_HOME=/home/clauder/.config
-ENV XDG_CACHE_HOME=/home/clauder/.cache
-ENV XDG_STATE_HOME=/home/clauder/.local/state
+ENV XDG_DATA_HOME=/home/digital-twin/.local/share
+ENV XDG_CONFIG_HOME=/home/digital-twin/.config
+ENV XDG_CACHE_HOME=/home/digital-twin/.cache
+ENV XDG_STATE_HOME=/home/digital-twin/.local/state
 
 # PATH: Volume paths FIRST (user installs), image paths LAST (fallbacks)
-ENV PATH="/home/clauder/.local/bin:/home/clauder/.local/node/bin:/home/clauder/.claude/local:/home/clauder/node_modules/.bin:/usr/local/bin:/usr/bin:/usr/lib/code-server/lib/vscode/bin/remote-cli:${PATH}"
+ENV PATH="/home/digital-twin/.local/bin:/home/digital-twin/.local/node/bin:/home/digital-twin/.claude/local:/home/digital-twin/node_modules/.bin:/usr/local/bin:/usr/bin:/usr/lib/code-server/lib/vscode/bin/remote-cli:${PATH}"
 
 # Custom startup scripts directory
-ENV ENTRYPOINTD=/home/clauder/entrypoint.d
+ENV ENTRYPOINTD=/home/digital-twin/entrypoint.d
 
 # ============================================================================
 # USER SETUP
-# Create clauder user (UID 1000) with passwordless sudo
+# Create digital-twin user (UID 1000) with passwordless sudo
 # - Stays non-root for Claude YOLO mode compatibility
 # - Can use sudo for package installs (apt, npm -g, pip, etc.)
 # ============================================================================
 
 RUN apt-get update && apt-get install -y sudo \
     && rm -rf /var/lib/apt/lists/* \
-    && (groupadd -g 1000 clauder 2>/dev/null || true) \
-    && (useradd -m -s /bin/bash -u 1000 -g 1000 clauder 2>/dev/null || usermod -l clauder -d /home/clauder -m coder 2>/dev/null || true) \
-    && (groupmod -n clauder coder 2>/dev/null || true) \
+    && (groupadd -g 1000 digital-twin 2>/dev/null || true) \
+    && (useradd -m -s /bin/bash -u 1000 -g 1000 digital-twin 2>/dev/null || usermod -l digital-twin -d /home/digital-twin -m coder 2>/dev/null || true) \
+    && (groupmod -n digital-twin coder 2>/dev/null || true) \
     && mkdir -p /etc/sudoers.d \
-    && echo "clauder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/clauder \
-    && chmod 0440 /etc/sudoers.d/clauder \
-    && chown root:root /etc/sudoers.d/clauder
+    && echo "digital-twin ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/digital-twin \
+    && chmod 0440 /etc/sudoers.d/digital-twin \
+    && chown root:root /etc/sudoers.d/digital-twin
 
 # ============================================================================
 # DIRECTORY SETUP
 # ============================================================================
 
 RUN mkdir -p \
-    /home/clauder/.local/share \
-    /home/clauder/.config \
-    /home/clauder/.cache \
-    /home/clauder/.local/state \
-    /home/clauder/.local/bin \
-    /home/clauder/.local/node \
-    /home/clauder/.claude \
-    /home/clauder/entrypoint.d \
-    /home/clauder/workspace \
-    && chown -R 1000:1000 /home/clauder
+    /home/digital-twin/.local/share \
+    /home/digital-twin/.config \
+    /home/digital-twin/.cache \
+    /home/digital-twin/.local/state \
+    /home/digital-twin/.local/bin \
+    /home/digital-twin/.local/node \
+    /home/digital-twin/.claude \
+    /home/digital-twin/entrypoint.d \
+    /home/digital-twin/workspace \
+    && chown -R 1000:1000 /home/digital-twin
 
 # Copy our custom entrypoint (replaces base image's entrypoint)
 COPY railway-entrypoint.sh /usr/bin/railway-entrypoint.sh
@@ -100,9 +100,9 @@ RUN chmod +x /usr/bin/railway-entrypoint.sh
 # ============================================================================
 
 RUN npm install -g @anthropic-ai/claude-code \
-    && printf '#!/bin/bash\nexec node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js "$@"\n' > /home/clauder/.local/bin/claude \
-    && chmod +x /home/clauder/.local/bin/claude \
-    && chown 1000:1000 /home/clauder/.local/bin/claude \
+    && printf '#!/bin/bash\nexec node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js "$@"\n' > /home/digital-twin/.local/bin/claude \
+    && chmod +x /home/digital-twin/.local/bin/claude \
+    && chown 1000:1000 /home/digital-twin/.local/bin/claude \
     && echo "Claude CLI installed via Node wrapper (Bun crash workaround)"
 
 # ============================================================================
@@ -110,7 +110,7 @@ RUN npm install -g @anthropic-ai/claude-code \
 # Stay as root - entrypoint handles user switching based on RUN_AS_USER
 # ============================================================================
 
-WORKDIR /home/clauder/workspace
+WORKDIR /home/digital-twin/workspace
 EXPOSE 8080
 
 # Use our entrypoint which calls code-server directly
