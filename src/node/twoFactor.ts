@@ -229,6 +229,20 @@ export class TwoFactorProvider {
   }
 
   /**
+   * Remove an enrolled secret so the next login walks through enrollment
+   * again.  Returns false when the secret comes from $TOTP_SECRET, which can
+   * only be changed in the deployment environment.
+   */
+  public async reset(): Promise<boolean> {
+    if (this.secretFromEnv) {
+      return false
+    }
+    await fs.rm(this.filePath, { force: true }).catch(() => undefined)
+    this.fileSecret = null
+    return true
+  }
+
+  /**
    * Verify a code and burn its counter so the same code cannot be replayed.
    */
   public consumeCode(secret: string, code: string, nowMs = Date.now()): boolean {

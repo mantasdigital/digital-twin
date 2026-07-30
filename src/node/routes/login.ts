@@ -1,3 +1,4 @@
+import { logger } from "@coder/logger"
 import { Router, Request } from "express"
 import { promises as fs } from "fs"
 import { RateLimiter as Limiter } from "limiter"
@@ -6,6 +7,8 @@ import * as qrcode from "qrcode"
 import { rootPath } from "../constants"
 import { authenticated, getCookieOptions, getHost, redirect, replaceTemplates } from "../http"
 import i18n from "../i18n"
+import { getClientIp } from "../ipBan"
+import { sendMail } from "../mailer"
 import { issueSessionToken, totpUri } from "../twoFactor"
 import { getPasswordMethod, handlePasswordValidation, sanitizeString, escapeHtml } from "../util"
 
@@ -122,6 +125,59 @@ const logFailedAttempt = (req: Request): void => {
   )
 }
 
+/**
+ * A ban just triggered: issue single-use recovery links, put them in the
+ * server logs (the guaranteed channel), and best-effort email them to
+ * $OWNER_EMAIL directly via the recipient's MX.
+ */
+const notifyBan = async (req: Request, ip: string, level: "temporary" | "permanent"): Promise<void> => {
+  const unbanToken = await req.ipBan.issueToken("unban", ip)
+  const resetToken = await req.ipBan.issueToken("reset-2fa", ip)
+  const host = getHost(req)
+  const base = host ? `https://${host}` : ""
+  const unbanUrl = `${base}/unban?token=${unbanToken}`
+  const resetUrl = `${base}/unban?token=${resetToken}`
+  const what = level === "permanent" ? "PERMANENTLY BANNED" : "temporarily blocked (15 minutes)"
+
+  req.ipBan.audit(level === "permanent" ? "permanent_ban" : "temp_block", ip)
+  logger.error(`SECURITY: ${ip} ${what} after repeated failed logins`)
+  logger.error(`  Unban this IP:      ${unbanUrl}`)
+  logger.error(`  Unban + reset 2FA:  ${resetUrl}`)
+
+  const owner = process.env.OWNER_EMAIL
+  if (owner) {
+    const text = [
+      `The address ${ip} was ${what} after repeated failed logins on ${host || "your Digital Twin instance"}.`,
+      "",
+      `If this was you, use one of these single-use links (valid 24 hours):`,
+      "",
+      `Unban the IP:              ${unbanUrl}`,
+      `Unban and reset 2FA:       ${resetUrl}`,
+      "",
+      "You can also manage bans at /security while logged in, or find these",
+      "links in the deployment logs.",
+    ].join("\n")
+    sendMail(owner, `[Digital Twin] login ${level === "permanent" ? "ban" : "block"}: ${ip}`, text)
+      .then((ok) => req.ipBan.audit(ok ? "email_sent" : "email_failed", ip, { to: owner }))
+      .catch(() => undefined)
+  } else {
+    logger.info("Set $OWNER_EMAIL to also receive these recovery links by email.")
+  }
+}
+
+/**
+ * Record a failed credential attempt against the client address and escalate
+ * to a block/ban when the thresholds are crossed.
+ */
+const registerFailure = async (req: Request, event: string): Promise<void> => {
+  const ip = getClientIp(req)
+  req.ipBan.audit(event, ip, { userAgent: req.headers["user-agent"] })
+  const escalated = await req.ipBan.recordFailure(ip)
+  if (escalated) {
+    await notifyBan(req, ip, escalated)
+  }
+}
+
 interface LoginBody {
   password?: string
   base?: string
@@ -135,6 +191,18 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
   const setupToken = sanitizeString(req.body?.["setup-token"])
   const hashedPasswordFromArgs = req.args["hashed-password"]
   const to = (typeof req.query.to === "string" && req.query.to) || "/"
+  const clientIp = getClientIp(req)
+
+  // Banned addresses are refused before any credential handling.
+  const banStatus = await req.ipBan.status(clientIp)
+  if (banStatus.banned) {
+    req.ipBan.audit("blocked_attempt", clientIp, { userAgent: req.headers["user-agent"] })
+    const message = banStatus.permanent
+      ? (i18n.t("IP_BANNED") as string)
+      : (i18n.t("IP_TEMP_BLOCKED", { minutes: Math.max(1, Math.ceil((banStatus.retryInMs || 0) / 60000)) }) as string)
+    res.send(await getRoot(req, new Error(message)))
+    return
+  }
 
   // Confirmation step of first-time two-factor enrollment.  The setup token
   // was only handed out after a successful password check, so possession of a
@@ -147,6 +215,7 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
       }
       if (!pendingSecret) {
         limiter.removeToken()
+        await registerFailure(req, "bad_setup_token")
         throw new Error(i18n.t("TOTP_SETUP_EXPIRED") as string)
       }
       if (!code) {
@@ -155,9 +224,12 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
       if (!(await req.twoFactor.completeSetup(setupToken, code))) {
         limiter.removeToken()
         logFailedAttempt(req)
+        await registerFailure(req, "bad_code")
         throw new Error(i18n.t("INCORRECT_TOTP_CODE") as string)
       }
 
+      await req.ipBan.recordSuccess(clientIp)
+      req.ipBan.audit("setup_complete", clientIp)
       const totpSecret = await req.twoFactor.getSecret()
       res.cookie(req.cookieSessionName, issueSessionToken(totpSecret!), getCookieOptions(req))
       return redirect(req, res, to, { to: undefined })
@@ -202,9 +274,12 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
         if (!req.twoFactor.consumeCode(totpSecret, code)) {
           limiter.removeToken()
           logFailedAttempt(req)
+          await registerFailure(req, "bad_code")
           throw new Error(i18n.t("INCORRECT_TOTP_CODE") as string)
         }
 
+        await req.ipBan.recordSuccess(clientIp)
+        req.ipBan.audit("login_ok", clientIp)
         res.cookie(req.cookieSessionName, issueSessionToken(totpSecret), getCookieOptions(req))
         return redirect(req, res, to, { to: undefined })
       }
@@ -220,6 +295,8 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
       // Two-factor disabled: legacy behavior.  The hash does not add any
       // actual security but we do it for obfuscation purposes (and as a side
       // effect it handles escaping).
+      await req.ipBan.recordSuccess(clientIp)
+      req.ipBan.audit("login_ok", clientIp)
       res.cookie(req.cookieSessionName, hashedPassword, getCookieOptions(req))
       return redirect(req, res, to, { to: undefined })
     }
@@ -228,6 +305,7 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
     // which is why this logic must come after the successful login logic
     limiter.removeToken()
     logFailedAttempt(req)
+    await registerFailure(req, "bad_password")
 
     throw new Error(i18n.t("INCORRECT_PASSWORD") as string)
   } catch (error: any) {

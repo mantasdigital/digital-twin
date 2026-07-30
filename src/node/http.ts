@@ -9,6 +9,7 @@ import { normalize } from "../common/util"
 import { AuthType, DefaultedArgs } from "./cli"
 import { version as codeServerVersion } from "./constants"
 import { Heart } from "./heart"
+import { IpBanProvider } from "./ipBan"
 import { CoderSettings, SettingsProvider } from "./settings"
 import { TwoFactorProvider, verifySessionToken } from "./twoFactor"
 import { UpdateProvider } from "./update"
@@ -42,6 +43,7 @@ declare global {
       settings: SettingsProvider<CoderSettings>
       updater: UpdateProvider
       twoFactor: TwoFactorProvider
+      ipBan: IpBanProvider
       cookieSessionName: string
     }
   }

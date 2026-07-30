@@ -12,6 +12,7 @@ import { AuthType, DefaultedArgs } from "../cli"
 import { commit, rootPath } from "../constants"
 import { Heart } from "../heart"
 import { redirect } from "../http"
+import { IpBanProvider } from "../ipBan"
 import { CoderSettings, SettingsProvider } from "../settings"
 import { TwoFactorProvider } from "../twoFactor"
 import { UpdateProvider } from "../update"
@@ -23,6 +24,8 @@ import * as health from "./health"
 import * as login from "./login"
 import * as logout from "./logout"
 import * as pathProxy from "./pathProxy"
+import * as security from "./security"
+import * as unban from "./unban"
 import * as update from "./update"
 import * as vscode from "./vscode"
 
@@ -69,6 +72,7 @@ export const register = async (
     args["totp-secret"],
     !args["disable-2fa"],
   )
+  const ipBan = new IpBanProvider(path.join(args["user-data-dir"], "ip-bans.json"))
 
   const cookieSessionName = getCookieSessionName(args["cookie-suffix"])
 
@@ -87,6 +91,7 @@ export const register = async (
     req.settings = settings
     req.updater = updater
     req.twoFactor = twoFactor
+    req.ipBan = ipBan
     req.cookieSessionName = cookieSessionName
 
     next()
@@ -167,6 +172,8 @@ export const register = async (
   if (args.auth === AuthType.Password) {
     app.router.use("/login", login.router)
     app.router.use("/logout", logout.router)
+    app.router.use("/unban", unban.router)
+    app.router.use("/security", security.router)
   } else {
     app.router.all("/login", (req, res) => redirect(req, res, "/", {}))
     app.router.all("/logout", (req, res) => redirect(req, res, "/", {}))

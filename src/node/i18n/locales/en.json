@@ -19,5 +19,7 @@
   "TOTP_SETUP_SECRET_LABEL": "Secret:",
   "TOTP_SETUP_ENV_NOTE": "Running several instances? Set TOTP_SECRET to this value on each of them so a single authenticator entry works everywhere.",
   "TOTP_SETUP_CONFIRM_LABEL": "Enter the 6-digit code from your authenticator to finish:",
-  "TOTP_SETUP_SUBMIT": "VERIFY & ENABLE"
+  "TOTP_SETUP_SUBMIT": "VERIFY & ENABLE",
+  "IP_TEMP_BLOCKED": "Too many failed attempts. This address is blocked for {{minutes}} more minute(s).",
+  "IP_BANNED": "Too many failed attempts. This address is permanently banned. Use the recovery link from the server logs or owner email."
 }
