@@ -15,7 +15,31 @@ echo ""
 # CONFIGURABLE PATHS AND USER
 # ============================================================================
 
+# Auto-detect the home volume when $DIGITAL_TWIN_HOME is not set explicitly.
+# Volumes from older deployments may be mounted at /home/clauder (the legacy
+# name) or any other /home/<name>; those keep working as-is. Only when no
+# existing volume is found do we fall back to creating /home/digital-twin.
+if [ -z "${DIGITAL_TWIN_HOME:-}" ]; then
+    if [ -d /home/digital-twin/workspace ] && [ -n "$(ls -A /home/digital-twin/workspace 2>/dev/null)" ]; then
+        # An initialized digital-twin volume (the baked image dir is empty).
+        DIGITAL_TWIN_HOME="/home/digital-twin"
+    elif [ -d /home/clauder ]; then
+        DIGITAL_TWIN_HOME="/home/clauder"
+    else
+        for dir in /home/*/; do
+            name="$(basename "$dir")"
+            [ "$name" = "digital-twin" ] && continue
+            if [ -d "$dir/workspace" ]; then
+                DIGITAL_TWIN_HOME="/home/$name"
+                break
+            fi
+        done
+    fi
+fi
+
 DIGITAL_TWIN_HOME="${DIGITAL_TWIN_HOME:-/home/digital-twin}"
+export DIGITAL_TWIN_HOME
+echo "→ Home volume: $DIGITAL_TWIN_HOME"
 DIGITAL_TWIN_UID="${DIGITAL_TWIN_UID:-1000}"
 DIGITAL_TWIN_GID="${DIGITAL_TWIN_GID:-1000}"
 

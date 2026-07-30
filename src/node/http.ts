@@ -130,6 +130,12 @@ export const authenticated = async (req: express.Request): Promise<boolean> => {
       if (totpSecret) {
         return verifySessionToken(totpSecret, sanitizeString(req.cookies[req.cookieSessionName]))
       }
+      if (req.twoFactor.enabled) {
+        // Two-factor is required but nothing is enrolled yet, so no cookie
+        // can be valid.  Accepting legacy hashed-password cookies here would
+        // let sessions from before the 2FA rollout skip enrollment forever.
+        return false
+      }
 
       // The password is stored in the cookie after being hashed.
       const hashedPasswordFromArgs = req.args["hashed-password"]

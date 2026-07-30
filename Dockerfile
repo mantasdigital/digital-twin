@@ -3,6 +3,38 @@
 # https://github.com/mantasdigital/digital-twin
 # ============================================================================
 
+# ============================================================================
+# BUILDER STAGE
+# Compile this fork's server code (2FA login, signed session cookies,
+# branding). The final image overlays it onto the stock code-server install —
+# without this, changes under src/ never reach the deployment.
+# ============================================================================
+
+FROM node:22-bookworm-slim AS builder
+
+WORKDIR /build
+
+COPY package.json package-lock.json tsconfig.json ./
+COPY typings ./typings
+# --ignore-scripts: skip the postinstall that pulls test/ and lib/vscode
+# submodule deps; plain tsc only needs the type packages.
+RUN npm ci --ignore-scripts --no-audit --no-fund
+
+COPY src ./src
+RUN npx tsc -p tsconfig.json
+
+# qrcode (used by the 2FA setup page) is not in the stock release's
+# node_modules. Stage it with its own deps nested so nothing in the stock
+# dependency tree gets clobbered.
+RUN mkdir /qr-stage && cd /qr-stage && npm init -y >/dev/null \
+    && npm install --no-audit --no-fund --omit=dev qrcode@^1.5.4 \
+    && mkdir -p /qr-layout/qrcode/node_modules \
+    && cp -r /qr-stage/node_modules/qrcode/. /qr-layout/qrcode/ \
+    && for dep in /qr-stage/node_modules/*; do \
+         name="$(basename "$dep")"; \
+         [ "$name" = "qrcode" ] || [ "$name" = ".package-lock.json" ] || cp -r "$dep" "/qr-layout/qrcode/node_modules/$name"; \
+       done
+
 FROM codercom/code-server:4.113.0
 
 USER root
@@ -91,6 +123,16 @@ RUN mkdir -p \
 # Copy our custom entrypoint (replaces base image's entrypoint)
 COPY railway-entrypoint.sh /usr/bin/railway-entrypoint.sh
 RUN chmod +x /usr/bin/railway-entrypoint.sh
+
+# ============================================================================
+# FORK SERVER CODE OVERLAY
+# Replace the stock server layer with this fork's build (adds mandatory TOTP
+# 2FA at login and HMAC-signed session cookies). lib/vscode stays stock.
+# ============================================================================
+
+COPY --from=builder /build/out /usr/lib/code-server/out
+COPY src/browser /usr/lib/code-server/src/browser
+COPY --from=builder /qr-layout/qrcode /usr/lib/code-server/node_modules/qrcode
 
 # ============================================================================
 # CLAUDE CODE CLI INSTALLATION

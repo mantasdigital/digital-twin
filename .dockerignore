@@ -5,3 +5,10 @@
 !Dockerfile
 !railway-entrypoint.sh
 !railway.json
+
+# Server source compiled by the builder stage (2FA login, session tokens)
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/**
+!typings/**
