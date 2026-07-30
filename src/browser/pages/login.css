@@ -17,6 +17,10 @@ body {
   width: 100%;
 }
 
+.login-form > .field + .field {
+  margin-top: 16px;
+}
+
 @media (max-width: 600px) {
   .login-form > .field {
     flex-direction: column;

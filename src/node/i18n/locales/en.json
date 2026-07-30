@@ -9,5 +9,15 @@
   "PASSWORD_PLACEHOLDER": "PASSWORD",
   "LOGIN_RATE_LIMIT": "Login rate limited!",
   "MISS_PASSWORD": "Missing password",
-  "INCORRECT_PASSWORD": "Incorrect password"
+  "INCORRECT_PASSWORD": "Incorrect password",
+  "TOTP_PLACEHOLDER": "2FA CODE",
+  "MISS_TOTP_CODE": "Missing two-factor code",
+  "INCORRECT_TOTP_CODE": "Incorrect two-factor code",
+  "TOTP_SETUP_EXPIRED": "Two-factor setup expired. Please log in again.",
+  "TOTP_SETUP_TITLE": "Set up two-factor authentication",
+  "TOTP_SETUP_INTRO": "Two-factor authentication is required but not set up yet. Scan the QR code with 1Password (or any authenticator app), or add the secret manually.",
+  "TOTP_SETUP_SECRET_LABEL": "Secret:",
+  "TOTP_SETUP_ENV_NOTE": "Running several instances? Set TOTP_SECRET to this value on each of them so a single authenticator entry works everywhere.",
+  "TOTP_SETUP_CONFIRM_LABEL": "Enter the 6-digit code from your authenticator to finish:",
+  "TOTP_SETUP_SUBMIT": "VERIFY & ENABLE"
 }

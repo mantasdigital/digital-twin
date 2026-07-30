@@ -13,6 +13,7 @@ import { commit, rootPath } from "../constants"
 import { Heart } from "../heart"
 import { redirect } from "../http"
 import { CoderSettings, SettingsProvider } from "../settings"
+import { TwoFactorProvider } from "../twoFactor"
 import { UpdateProvider } from "../update"
 import { getMediaMime, paths } from "../util"
 import type { WebsocketRequest } from "../wsRouter"
@@ -59,7 +60,15 @@ export const register = async (
   app.wsRouter.use(cookieParser())
 
   const settings = new SettingsProvider<CoderSettings>(path.join(args["user-data-dir"], "coder.json"))
-  const updater = new UpdateProvider("https://api.github.com/repos/mantasdigital/digital-twin/releases/latest", settings)
+  const updater = new UpdateProvider(
+    "https://api.github.com/repos/mantasdigital/digital-twin/releases/latest",
+    settings,
+  )
+  const twoFactor = new TwoFactorProvider(
+    path.join(args["user-data-dir"], "two-factor.json"),
+    args["totp-secret"],
+    !args["disable-2fa"],
+  )
 
   const cookieSessionName = getCookieSessionName(args["cookie-suffix"])
 
@@ -77,6 +86,7 @@ export const register = async (
     req.heart = heart
     req.settings = settings
     req.updater = updater
+    req.twoFactor = twoFactor
     req.cookieSessionName = cookieSessionName
 
     next()

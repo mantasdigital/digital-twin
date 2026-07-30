@@ -2,6 +2,7 @@ import { field, Level, logger } from "@coder/logger"
 import { promises as fs } from "fs"
 import { load } from "js-yaml"
 import * as path from "path"
+import { isValidBase32 } from "./twoFactor"
 import { generateCertificate, generatePassword, paths, splitOnFirstEquals } from "./util"
 import { EditorSessionManagerClient } from "./vscodeSocket"
 
@@ -70,6 +71,8 @@ export interface UserProvidedArgs extends UserProvidedCodeArgs {
   auth?: AuthType
   password?: string
   "hashed-password"?: string
+  "totp-secret"?: string
+  "disable-2fa"?: boolean
   cert?: OptionalString
   "cert-host"?: string
   "cert-key"?: string
@@ -152,6 +155,16 @@ export const options: Options<Required<UserProvidedArgs>> = {
     description:
       "The password hashed with argon2 for password authentication (can only be passed in via $HASHED_PASSWORD or the config file). \n" +
       "Takes precedence over 'password'.",
+  },
+  "totp-secret": {
+    type: "string",
+    description:
+      "Base32 TOTP secret for two-factor authentication (can only be passed in via $TOTP_SECRET or the config file). \n" +
+      "Set the same value on every instance to share one authenticator entry. If unset, first login walks through enrollment.",
+  },
+  "disable-2fa": {
+    type: "boolean",
+    description: "Disable two-factor authentication (also via $CS_DISABLE_2FA). Not recommended.",
   },
   cert: {
     type: OptionalString,
@@ -404,6 +417,10 @@ export const parse = (
         throw new Error("--hashed-password can only be set in the config file or passed in via $HASHED_PASSWORD")
       }
 
+      if (key === "totp-secret" && !opts?.configFile) {
+        throw new Error("--totp-secret can only be set in the config file or passed in via $TOTP_SECRET")
+      }
+
       if (key === "github-auth" && !opts?.configFile) {
         throw new Error("--github-auth can only be set in the config file or passed in via $GITHUB_TOKEN")
       }
@@ -623,6 +640,17 @@ export async function setDefaults(cliArgs: UserProvidedArgs, configArgs?: Config
     usingEnvPassword = false
   }
 
+  if (process.env.TOTP_SECRET) {
+    if (!isValidBase32(process.env.TOTP_SECRET)) {
+      throw new Error("$TOTP_SECRET must be a base32 string (A-Z, 2-7)")
+    }
+    args["totp-secret"] = process.env.TOTP_SECRET
+  }
+
+  if (process.env.CS_DISABLE_2FA?.match(/^(1|true)$/)) {
+    args["disable-2fa"] = true
+  }
+
   if (process.env.CODE_SERVER_COOKIE_SUFFIX) {
     args["cookie-suffix"] = process.env.CODE_SERVER_COOKIE_SUFFIX
   }
@@ -645,6 +673,7 @@ export async function setDefaults(cliArgs: UserProvidedArgs, configArgs?: Config
   delete process.env.PASSWORD
   delete process.env.HASHED_PASSWORD
   delete process.env.GITHUB_TOKEN
+  delete process.env.TOTP_SECRET
 
   // Filter duplicate proxy domains and remove any leading `*.`.
   const proxyDomains = new Set((args["proxy-domain"] || []).map((d) => d.replace(/^\*\./, "")))

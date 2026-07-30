@@ -10,6 +10,7 @@ import { AuthType, DefaultedArgs } from "./cli"
 import { version as codeServerVersion } from "./constants"
 import { Heart } from "./heart"
 import { CoderSettings, SettingsProvider } from "./settings"
+import { TwoFactorProvider, verifySessionToken } from "./twoFactor"
 import { UpdateProvider } from "./update"
 import {
   getPasswordMethod,
@@ -40,6 +41,7 @@ declare global {
       heart: Heart
       settings: SettingsProvider<CoderSettings>
       updater: UpdateProvider
+      twoFactor: TwoFactorProvider
       cookieSessionName: string
     }
   }
@@ -120,6 +122,15 @@ export const authenticated = async (req: express.Request): Promise<boolean> => {
       return true
     }
     case AuthType.Password: {
+      // With two-factor enrolled, the cookie holds an HMAC-signed session
+      // token issued only after both factors were presented.  The legacy
+      // hashed-password cookie must not be accepted then, since anyone who
+      // knows the password could forge it and bypass the second factor.
+      const totpSecret = await req.twoFactor.getSecret()
+      if (totpSecret) {
+        return verifySessionToken(totpSecret, sanitizeString(req.cookies[req.cookieSessionName]))
+      }
+
       // The password is stored in the cookie after being hashed.
       const hashedPasswordFromArgs = req.args["hashed-password"]
       const passwordMethod = getPasswordMethod(hashedPasswordFromArgs)
