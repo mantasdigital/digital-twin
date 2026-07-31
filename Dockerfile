@@ -136,16 +136,30 @@ COPY --from=builder /qr-layout/qrcode /usr/lib/code-server/node_modules/qrcode
 
 # ============================================================================
 # CLAUDE CODE CLI INSTALLATION
-# Install globally via npm, then replace the Bun binary with a Node wrapper.
-# Bun v1.3.11 crashes on Kernel 6.18+ with "Failed to start HTTP Client thread".
-# The Node wrapper routes all `claude` calls through Node instead of Bun.
+# Install globally via npm and provide a location-agnostic launcher.  The
+# wrapper prefers a user-installed copy on the volume, then the image's
+# npm-global package, and handles every package layout claude-code has
+# shipped (native bin/claude.exe, cli-wrapper.cjs, legacy cli.js).  Never
+# hardcode a single path here: volumes outlive images and npm's global
+# prefix differs between node distributions (/usr/lib vs /usr/local/lib).
 # ============================================================================
 
 RUN npm install -g @anthropic-ai/claude-code \
-    && printf '#!/bin/bash\nexec node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js "$@"\n' > /home/digital-twin/.local/bin/claude \
+    && printf '%s\n' \
+        '#!/bin/bash' \
+        '# digital-twin claude wrapper (rewritten on boot by railway-entrypoint.sh)' \
+        'for base in "$HOME/.npm-global/lib/node_modules" /usr/lib/node_modules /usr/local/lib/node_modules; do' \
+        '  pkg="$base/@anthropic-ai/claude-code"' \
+        '  if [ -x "$pkg/bin/claude.exe" ]; then exec "$pkg/bin/claude.exe" "$@"; fi' \
+        '  if [ -f "$pkg/cli-wrapper.cjs" ]; then exec node "$pkg/cli-wrapper.cjs" "$@"; fi' \
+        '  if [ -f "$pkg/cli.js" ]; then exec node "$pkg/cli.js" "$@"; fi' \
+        'done' \
+        'echo "Claude Code not found. Install with: sudo npm install -g @anthropic-ai/claude-code" >&2' \
+        'exit 1' \
+        > /home/digital-twin/.local/bin/claude \
     && chmod +x /home/digital-twin/.local/bin/claude \
     && chown 1000:1000 /home/digital-twin/.local/bin/claude \
-    && echo "Claude CLI installed via Node wrapper (Bun crash workaround)"
+    && echo "Claude CLI installed with location-agnostic launcher"
 
 # ============================================================================
 # RUNTIME

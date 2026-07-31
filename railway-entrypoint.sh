@@ -217,6 +217,35 @@ WELCOME
 fi
 
 # ============================================================================
+# CLAUDE WRAPPER SELF-HEAL
+# Volumes can carry a wrapper from an older image that hardcodes a cli.js
+# path that no longer exists (npm prefixes and the claude-code package layout
+# both changed over time).  Rewrite any of our shell wrappers with the
+# current location-agnostic version.  A user-installed native binary at this
+# path is left untouched (it has no shebang), and nothing is created when no
+# wrapper exists — /usr/bin/claude from the image install covers that.
+# ============================================================================
+
+CLAUDE_WRAPPER="$HOME/.local/bin/claude"
+if [ -f "$CLAUDE_WRAPPER" ] && [ "$(head -c 2 "$CLAUDE_WRAPPER" 2>/dev/null)" = "#!" ] &&
+    grep -q "@anthropic-ai/claude-code" "$CLAUDE_WRAPPER" 2>/dev/null; then
+    cat > "$CLAUDE_WRAPPER" << 'WRAPPER'
+#!/bin/bash
+# digital-twin claude wrapper (rewritten on boot by railway-entrypoint.sh)
+for base in "$HOME/.npm-global/lib/node_modules" /usr/lib/node_modules /usr/local/lib/node_modules; do
+  pkg="$base/@anthropic-ai/claude-code"
+  if [ -x "$pkg/bin/claude.exe" ]; then exec "$pkg/bin/claude.exe" "$@"; fi
+  if [ -f "$pkg/cli-wrapper.cjs" ]; then exec node "$pkg/cli-wrapper.cjs" "$@"; fi
+  if [ -f "$pkg/cli.js" ]; then exec node "$pkg/cli.js" "$@"; fi
+done
+echo "Claude Code not found. Install with: sudo npm install -g @anthropic-ai/claude-code" >&2
+exit 1
+WRAPPER
+    chmod +x "$CLAUDE_WRAPPER"
+    echo "→ Refreshed stale claude wrapper at $CLAUDE_WRAPPER"
+fi
+
+# ============================================================================
 # ENVIRONMENT VERIFICATION
 # ============================================================================
 
