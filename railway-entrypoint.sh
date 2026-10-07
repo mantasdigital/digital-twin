@@ -405,8 +405,20 @@ fi
 # ============================================================================
 
 BUNDLED_EXT_DIR="/opt/digital-twin/extensions"
-if [ -d "$BUNDLED_EXT_DIR" ]; then
-    MARKER_DIR="$XDG_DATA_HOME/code-server/bundled-extensions"
+MARKER_DIR="$XDG_DATA_HOME/code-server/bundled-extensions"
+if [ "${DIGITAL_TWIN_BUNDLED_EXTENSIONS:-on}" = "off" ]; then
+    # Opt-out for organisations that do not want Voice Control on their servers.
+    # Also removes a copy installed by an earlier boot.
+    echo "→ Bundled extensions disabled (DIGITAL_TWIN_BUNDLED_EXTENSIONS=off)"
+    for vsix in "$BUNDLED_EXT_DIR"/*.vsix; do
+        [ -f "$vsix" ] || continue
+        ext_full_id="$(unzip -p "$vsix" extension/package.json 2>/dev/null | jq -r '.publisher + "." + .name' 2>/dev/null)"
+        if [ -n "$ext_full_id" ] && [ "$ext_full_id" != "null" ]; then
+            code-server --uninstall-extension "$ext_full_id" >/dev/null 2>&1 && echo "  ✓ Removed $ext_full_id" || true
+        fi
+    done
+    rm -rf "$MARKER_DIR" 2>/dev/null || true
+elif [ -d "$BUNDLED_EXT_DIR" ]; then
     mkdir -p "$MARKER_DIR" 2>/dev/null || true
     for vsix in "$BUNDLED_EXT_DIR"/*.vsix; do
         [ -f "$vsix" ] || continue

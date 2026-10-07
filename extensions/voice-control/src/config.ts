@@ -4,17 +4,31 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 export type SpeechProvider = "browser" | "openai" | "deepgram"
+export type ListeningMode = "pushToTalk" | "wakeWord"
+export type ConfirmationMode = "ask" | "countdown" | "auto"
 
 export const SECRET_ANTHROPIC = "digitalTwinVoice.anthropicApiKey"
 export const SECRET_OPENAI = "digitalTwinVoice.openaiApiKey"
 export const SECRET_DEEPGRAM = "digitalTwinVoice.deepgramApiKey"
 
 export interface Settings {
+  enabled: boolean
   model: string
   provider: SpeechProvider
   language: string
   openaiModel: string
   deepgramModel: string
+  listeningMode: ListeningMode
+  wakePhrase: string
+  wakeAliases: string[]
+  endWord: string
+  pauseSeconds: number
+  maxCommandSeconds: number
+  autoStart: boolean
+  chime: boolean
+  preferOnDevice: boolean
+  confirmationMode: ConfirmationMode
+  countdownSeconds: number
   confirmDangerous: boolean
   speakReplies: boolean
   remotePort: number
@@ -23,15 +37,62 @@ export interface Settings {
 export function settings(): Settings {
   const c = vscode.workspace.getConfiguration("digitalTwinVoice")
   return {
+    enabled: c.get<boolean>("enabled", true),
     model: c.get<string>("model", "claude-opus-5-5"),
     provider: c.get<SpeechProvider>("speech.provider", "browser"),
     language: c.get<string>("speech.language", "").trim(),
     openaiModel: c.get<string>("speech.openaiModel", "gpt-4o-transcribe"),
     deepgramModel: c.get<string>("speech.deepgramModel", "nova-3"),
+    listeningMode: c.get<ListeningMode>("listening.mode", "pushToTalk"),
+    wakePhrase: c.get<string>("listening.wakePhrase", "Hey Twin").trim() || "Hey Twin",
+    wakeAliases: c.get<string[]>("listening.wakeAliases", []).filter((s) => s && s.trim()),
+    endWord: c.get<string>("listening.endWord", "").trim(),
+    pauseSeconds: clamp(c.get<number>("listening.pauseSeconds", 6), 1.5, 30),
+    maxCommandSeconds: clamp(c.get<number>("listening.maxCommandSeconds", 60), 10, 300),
+    autoStart: c.get<boolean>("listening.autoStart", true),
+    chime: c.get<boolean>("listening.chime", true),
+    preferOnDevice: c.get<boolean>("listening.preferOnDevice", true),
+    confirmationMode: c.get<ConfirmationMode>("confirmation.mode", "countdown"),
+    countdownSeconds: clamp(c.get<number>("confirmation.countdownSeconds", 5), 2, 30),
     confirmDangerous: c.get<boolean>("confirmDangerous", true),
     speakReplies: c.get<boolean>("speakReplies", true),
     remotePort: c.get<number>("remotePort", 39339),
   }
+}
+
+/** Settings the panel UI (including the phone remote) may change. */
+export const EDITABLE_SETTINGS: Record<string, (v: unknown) => unknown | undefined> = {
+  "listening.mode": (v) => (v === "pushToTalk" || v === "wakeWord" ? v : undefined),
+  "listening.wakePhrase": (v) => (typeof v === "string" && v.trim().length >= 3 ? v.trim().slice(0, 40) : undefined),
+  "listening.wakeAliases": (v) =>
+    Array.isArray(v)
+      ? v
+          .filter((s) => typeof s === "string" && s.trim())
+          .map((s) => s.trim().slice(0, 40))
+          .slice(0, 10)
+      : undefined,
+  "listening.endWord": (v) => (typeof v === "string" ? v.trim().slice(0, 30) : undefined),
+  "listening.pauseSeconds": (v) => (typeof v === "number" && isFinite(v) ? clamp(v, 1.5, 30) : undefined),
+  "listening.autoStart": (v) => (typeof v === "boolean" ? v : undefined),
+  "listening.chime": (v) => (typeof v === "boolean" ? v : undefined),
+  "confirmation.mode": (v) => (v === "ask" || v === "countdown" || v === "auto" ? v : undefined),
+  "confirmation.countdownSeconds": (v) => (typeof v === "number" && isFinite(v) ? clamp(v, 2, 30) : undefined),
+  "speech.provider": (v) => (v === "browser" || v === "openai" || v === "deepgram" ? v : undefined),
+  "speech.language": (v) => (typeof v === "string" ? v.trim().slice(0, 12) : undefined),
+  speakReplies: (v) => (typeof v === "boolean" ? v : undefined),
+}
+
+export async function updateSetting(key: string, value: unknown): Promise<boolean> {
+  const validate = EDITABLE_SETTINGS[key]
+  if (!validate) return false
+  const clean = validate(value)
+  if (clean === undefined) return false
+  await vscode.workspace.getConfiguration("digitalTwinVoice").update(key, clean, vscode.ConfigurationTarget.Global)
+  return true
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n))
 }
 
 /**

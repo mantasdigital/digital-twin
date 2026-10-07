@@ -2,7 +2,7 @@
   "name": "digital-twin-voice",
   "displayName": "Digital Twin Voice Control",
   "description": "Talk to your Digital Twin: open terminals, run commands, open folders, download files and hand tasks to Claude Code by voice.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "digital-twin",
   "license": "MIT",
   "private": true,
@@ -33,7 +33,8 @@
           "id": "digitalTwinVoice.panel",
           "name": "Voice Control",
           "icon": "media/mic.svg",
-          "contextualTitle": "Voice Control"
+          "contextualTitle": "Voice Control",
+          "when": "config.digitalTwinVoice.enabled"
         }
       ]
     },
@@ -42,6 +43,15 @@
         "command": "digitalTwinVoice.toggleRecording",
         "title": "Voice: Start/Stop Listening",
         "icon": "$(mic)"
+      },
+      {
+        "command": "digitalTwinVoice.setup",
+        "title": "Voice: Run Setup Wizard"
+      },
+      {
+        "command": "digitalTwinVoice.toggleHandsFree",
+        "title": "Voice: Start/Stop Wake-Word Listening",
+        "icon": "$(unmute)"
       },
       {
         "command": "digitalTwinVoice.openPanel",
@@ -77,6 +87,11 @@
         "command": "digitalTwinVoice.toggleRecording",
         "key": "ctrl+shift+space",
         "mac": "cmd+shift+space"
+      },
+      {
+        "command": "digitalTwinVoice.toggleHandsFree",
+        "key": "ctrl+shift+alt+space",
+        "mac": "cmd+shift+alt+space"
       }
     ],
     "configuration": {
@@ -130,7 +145,7 @@
         "digitalTwinVoice.confirmDangerous": {
           "type": "boolean",
           "default": true,
-          "description": "Ask before running destructive commands (rm -rf, sudo, git push --force, closing windows, ...)."
+          "description": "Always ask before destructive commands (rm -rf, sudo, git push --force, closing windows, ...), whatever the confirmation mode."
         },
         "digitalTwinVoice.speakReplies": {
           "type": "boolean",
@@ -141,6 +156,105 @@
           "type": "number",
           "default": 39339,
           "description": "Local port for the Voice Remote page (opened in a separate browser tab or on your phone through code-server's proxy)."
+        },
+        "digitalTwinVoice.enabled": {
+          "type": "boolean",
+          "default": true,
+          "order": 0,
+          "description": "Master switch. Off hides the Voice panel and status bar item and ignores all voice commands."
+        },
+        "digitalTwinVoice.listening.mode": {
+          "type": "string",
+          "default": "pushToTalk",
+          "enum": [
+            "pushToTalk",
+            "wakeWord"
+          ],
+          "order": 10,
+          "enumDescriptions": [
+            "Only listens after you tap the microphone or press the shortcut (recommended).",
+            "Always listens for the wake phrase (e.g. \"Hey Twin\"), then captures one command."
+          ],
+          "description": "How listening starts."
+        },
+        "digitalTwinVoice.listening.wakePhrase": {
+          "type": "string",
+          "default": "Hey Twin",
+          "order": 11,
+          "description": "Wake phrase for hands-free mode. Two words or more are far less likely to trigger by accident."
+        },
+        "digitalTwinVoice.listening.wakeAliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "order": 12,
+          "description": "Extra spellings the speech engine tends to produce for your wake phrase (e.g. \"hey twins\", \"a twin\")."
+        },
+        "digitalTwinVoice.listening.endWord": {
+          "type": "string",
+          "default": "",
+          "order": 13,
+          "description": "Optional word that ends a command immediately (e.g. \"over\" or \"execute\"). Leave empty to rely on the pause only. A long pause always works, with or without an end word."
+        },
+        "digitalTwinVoice.listening.pauseSeconds": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1.5,
+          "maximum": 30,
+          "order": 14,
+          "description": "Seconds of silence that end a command. Generous by default so you can think mid-sentence."
+        },
+        "digitalTwinVoice.listening.maxCommandSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 300,
+          "order": 15,
+          "description": "Hard limit for one command."
+        },
+        "digitalTwinVoice.listening.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "order": 16,
+          "description": "In wake-word mode, start listening automatically when the Voice panel opens. Off means you arm it with the ear button each time."
+        },
+        "digitalTwinVoice.listening.chime": {
+          "type": "boolean",
+          "default": true,
+          "order": 17,
+          "description": "Play a short tone when the wake phrase is heard and when a command is captured."
+        },
+        "digitalTwinVoice.listening.preferOnDevice": {
+          "type": "boolean",
+          "default": true,
+          "order": 18,
+          "description": "Use the browser's on-device speech recognition for the wake-word listener when available (Chrome 139+), so ambient audio never leaves your computer."
+        },
+        "digitalTwinVoice.confirmation.mode": {
+          "type": "string",
+          "default": "countdown",
+          "enum": [
+            "ask",
+            "countdown",
+            "auto"
+          ],
+          "order": 20,
+          "enumDescriptions": [
+            "Show what was heard and the planned actions; nothing runs until you say \"yes\" or tap Confirm.",
+            "Show what was heard; run automatically after the countdown unless you say \"cancel\" or tap Cancel.",
+            "Run immediately (destructive commands still ask)."
+          ],
+          "description": "How much confirmation you want before actions run."
+        },
+        "digitalTwinVoice.confirmation.countdownSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 2,
+          "maximum": 30,
+          "order": 21,
+          "description": "Countdown length for the countdown confirmation mode."
         }
       }
     }

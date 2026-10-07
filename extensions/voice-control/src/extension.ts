@@ -10,6 +10,7 @@ import {
   SECRET_OPENAI,
   settings,
   SpeechProvider,
+  updateSetting,
 } from "./config"
 import { Action, interpret } from "./intent"
 import { ClientMessage, PanelViewProvider, RemoteServer } from "./panel"
@@ -18,6 +19,16 @@ import { buildContext, snapshotTree, TerminalRegistry, vocabulary } from "./work
 
 const FIRST_RUN_KEY = "digitalTwinVoice.firstRunShown"
 
+const YES = /^(yes|yeah|yep|yup|sure|confirm|confirmed|do it|run it|go ahead|go|ok|okay|proceed|run now)\b/i
+const NO = /^(no|nope|cancel|stop|abort|never ?mind|don'?t|wait)\b/i
+const STOP_LISTENING = /^(stop|pause|disable) (listening|hands ?free)|^go to sleep\b|^sleep now\b/i
+
+interface Pending {
+  actions: Action[]
+  heard: string
+  timer?: NodeJS.Timeout
+}
+
 class VoiceController {
   private readonly registry = new TerminalRegistry()
   private readonly keys: Keys
@@ -25,10 +36,10 @@ class VoiceController {
   private readonly remote: RemoteServer
   private readonly output: vscode.OutputChannel
   private readonly status: vscode.StatusBarItem
-  private pending: Action[] | undefined
-  private pendingTimer: NodeJS.Timeout | undefined
+  private pending: Pending | undefined
   private busy = false
   private recording = false
+  private handsFreeOwner: string | undefined
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.keys = new Keys(context.secrets)
@@ -37,9 +48,7 @@ class VoiceController {
     this.remote = new RemoteServer(context.extensionPath, (m) => this.onClientMessage(m))
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000)
     this.status.command = "digitalTwinVoice.toggleRecording"
-    this.status.tooltip = "Voice Control: start/stop listening (Ctrl+Shift+Space)"
-    this.setRecording(false)
-    this.status.show()
+    this.refreshStatusBar()
 
     context.subscriptions.push(
       this.output,
@@ -51,7 +60,10 @@ class VoiceController {
       vscode.window.onDidCloseTerminal(() => this.sendState()),
       vscode.window.onDidChangeActiveTerminal(() => this.sendState()),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("digitalTwinVoice")) void this.sendState()
+        if (e.affectsConfiguration("digitalTwinVoice")) {
+          this.refreshStatusBar()
+          void this.sendState()
+        }
       }),
       { dispose: () => this.remote.dispose() },
     )
@@ -65,29 +77,41 @@ class VoiceController {
   }
 
   private async onClientMessage(msg: ClientMessage): Promise<void> {
+    if (!settings().enabled && msg.type !== "ready" && msg.type !== "openSettings") return
     try {
       switch (msg.type) {
         case "ready":
           await this.sendState()
           break
         case "recording":
-          this.setRecording(Boolean(msg.active))
+          this.recording = Boolean(msg.active)
+          this.refreshStatusBar()
+          break
+        case "handsFree":
+          if (msg.active) this.handsFreeOwner = String(msg.clientId || "panel")
+          else if (!msg.clientId || msg.clientId === this.handsFreeOwner) this.handsFreeOwner = undefined
+          this.refreshStatusBar()
+          await this.sendState()
           break
         case "transcript":
-          await this.handleTranscript(String(msg.text ?? ""))
-          break
         case "text":
           await this.handleTranscript(String(msg.text ?? ""))
           break
         case "audio":
-          await this.handleAudio(String(msg.data ?? ""), String(msg.mime ?? "audio/webm"))
+          await this.handleAudio(String(msg.data ?? ""), String(msg.mime ?? "audio/webm"), String(msg.hint ?? ""))
           break
         case "confirm":
           await this.resolvePending(Boolean(msg.accept))
           break
         case "setup":
-          await this.handleSetup(String(msg.action), msg.value)
+          await this.handleSetup(String(msg.action))
           break
+        case "setSetting": {
+          const ok = await updateSetting(String(msg.key), msg.value)
+          if (!ok) this.broadcast({ type: "error", message: `Invalid value for ${msg.key}` })
+          await this.sendState()
+          break
+        }
         case "openRemote":
           await this.openRemote()
           break
@@ -107,30 +131,62 @@ class VoiceController {
     const s = settings()
     const anthropic = Boolean(await this.keys.anthropic())
     const speechKey = s.provider === "browser" ? true : Boolean(await this.keys.speech(s.provider))
+    const listeningChosen = this.context.globalState.get<boolean>("digitalTwinVoice.listeningChosen", false)
     this.broadcast({
       type: "state",
+      enabled: s.enabled,
       model: s.model,
       provider: s.provider,
       sttMode: s.provider === "browser" ? "browser" : "record",
       language: s.language,
       speakReplies: s.speakReplies,
+      listening: {
+        mode: s.listeningMode,
+        wakePhrase: s.wakePhrase,
+        wakeAliases: s.wakeAliases,
+        endWord: s.endWord,
+        pauseSeconds: s.pauseSeconds,
+        maxCommandSeconds: s.maxCommandSeconds,
+        autoStart: s.autoStart,
+        chime: s.chime,
+        preferOnDevice: s.preferOnDevice,
+      },
+      confirmation: { mode: s.confirmationMode, countdownSeconds: s.countdownSeconds },
       setup: {
         anthropic,
+        listeningChosen,
         claudeLogin: claudeCodeLoggedIn(),
         claudeInstalled: claudeCodeInstalled(),
         speechKey,
-        complete: anthropic && speechKey,
+        complete: anthropic && speechKey && listeningChosen,
       },
       terminals: this.registry.list(),
       recording: this.recording,
+      handsFreeOwner: this.handsFreeOwner ?? null,
       remoteRunning: this.remote.running,
     })
   }
 
-  private setRecording(active: boolean): void {
-    this.recording = active
-    this.status.text = active ? "$(record) Listening…" : "$(mic) Voice"
-    this.status.backgroundColor = active ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined
+  private refreshStatusBar(): void {
+    const s = settings()
+    if (!s.enabled) {
+      this.status.hide()
+      return
+    }
+    if (this.recording) {
+      this.status.text = "$(record) Listening…"
+      this.status.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground")
+    } else if (this.handsFreeOwner) {
+      this.status.text = `$(unmute) "${s.wakePhrase}"`
+      this.status.backgroundColor = undefined
+    } else {
+      this.status.text = "$(mic) Voice"
+      this.status.backgroundColor = undefined
+    }
+    this.status.tooltip = this.handsFreeOwner
+      ? `Voice Control: listening for "${s.wakePhrase}". Click to talk now.`
+      : "Voice Control: click or press Ctrl+Shift+Space to talk"
+    this.status.show()
   }
 
   private phase(phase: string, text?: string): void {
@@ -147,9 +203,15 @@ class VoiceController {
   // ---------------------------------------------------------------- commands
 
   async toggleRecording(): Promise<void> {
+    if (!settings().enabled) return
     await this.panel.reveal()
-    this.panel.send({ type: "record", start: !this.recording })
-    this.remote.send({ type: "record", start: !this.recording })
+    this.broadcast({ type: "record", start: !this.recording })
+  }
+
+  async toggleHandsFree(): Promise<void> {
+    if (!settings().enabled) return
+    await this.panel.reveal()
+    this.broadcast({ type: "handsFree", start: !this.handsFreeOwner })
   }
 
   async typeCommand(): Promise<void> {
@@ -166,14 +228,23 @@ class VoiceController {
   async openRemote(): Promise<void> {
     const port = await this.remote.start(settings().remotePort)
     const url = await this.remote.externalUrl()
-    this.output.appendLine(`Voice Remote listening on 127.0.0.1:${port}, external ${url}`)
-    await vscode.env.openExternal(vscode.Uri.parse(url))
+    this.output.appendLine(`Voice Remote listening on 127.0.0.1:${port}`)
+    const choice = await vscode.window.showInformationMessage(
+      "Voice Remote is ready. Open it here, or copy the link and open it on your phone or tablet (you must be logged in to this IDE there too).",
+      "Open here",
+      "Copy link",
+    )
+    if (choice === "Open here") await vscode.env.openExternal(vscode.Uri.parse(url))
+    else if (choice === "Copy link") {
+      await vscode.env.clipboard.writeText(url)
+      vscode.window.showInformationMessage("Link copied. It carries a one-time token valid until the IDE restarts.")
+    }
     await this.sendState()
   }
 
   // ---------------------------------------------------------------- setup
 
-  private async handleSetup(action: string, value: unknown): Promise<void> {
+  private async handleSetup(action: string): Promise<void> {
     switch (action) {
       case "anthropicKey":
         await this.setAnthropicKey()
@@ -184,19 +255,46 @@ class VoiceController {
       case "provider":
         await this.chooseProvider()
         break
+      case "listening":
+        await this.chooseListening()
+        break
       case "claudeLogin":
         await this.claudeLogin()
         break
-      case "value" /* direct value from the remote page */:
-        if (typeof value === "string") await this.keys.set(SECRET_ANTHROPIC, value)
+      case "wizard":
+        await this.runWizard()
         break
     }
     await this.sendState()
   }
 
+  /** Guided first-run flow: key → listening → Claude login → speech engine. */
+  async runWizard(): Promise<void> {
+    await this.panel.reveal()
+    if (!(await this.keys.anthropic())) {
+      await this.setAnthropicKey()
+      if (!(await this.keys.anthropic())) return
+    }
+    await this.chooseListening()
+    if (!claudeCodeLoggedIn()) {
+      const pick = await vscode.window.showQuickPick(
+        [
+          { label: "Log in now", description: "opens Claude Code in a terminal; follow its prompt", id: "login" },
+          { label: "Skip for now", description: '"ask Claude …" commands will not work until you log in', id: "skip" },
+        ],
+        { title: "Step 3 of 4 · Claude Code login", ignoreFocusOut: true },
+      )
+      if (pick?.id === "login") await this.claudeLogin()
+    }
+    await this.chooseProvider("Step 4 of 4 · Speech engine")
+    vscode.window.showInformationMessage(
+      'Voice Control is ready. Tap the microphone or press Ctrl+Shift+Space and say something like "open a terminal in src".',
+    )
+  }
+
   async setAnthropicKey(): Promise<void> {
     const value = await vscode.window.showInputBox({
-      title: "Anthropic API key",
+      title: "Step 1 of 4 · Anthropic API key",
       prompt: "Create one at console.anthropic.com → API keys. Stored only on this server.",
       password: true,
       ignoreFocusOut: true,
@@ -211,7 +309,6 @@ class VoiceController {
         vscode.window.showErrorMessage("That API key was rejected by Anthropic. Check it and try again.")
         return
       }
-      // Network or other hiccup: store the key anyway and let the first real call report.
       this.output.appendLine(`[setup] key check skipped: ${errorText(err)}`)
     }
     await this.keys.set(SECRET_ANTHROPIC, value)
@@ -219,7 +316,64 @@ class VoiceController {
     await this.sendState()
   }
 
-  async chooseProvider(): Promise<void> {
+  async chooseListening(): Promise<void> {
+    const s = settings()
+    const pick = await vscode.window.showQuickPick(
+      [
+        {
+          label: "$(mic) Push-to-talk",
+          description: "recommended",
+          detail: "Listens only after you tap the microphone or press Ctrl+Shift+Space. Nothing is heard otherwise.",
+          id: "pushToTalk",
+        },
+        {
+          label: "$(unmute) Wake word (hands-free)",
+          description: `say "${s.wakePhrase}" then your command`,
+          detail:
+            "Keeps the microphone open while the Voice panel is visible. Uses your browser's speech recognition (on-device on Chrome 139+, otherwise the browser vendor's service).",
+          id: "wakeWord",
+        },
+      ],
+      { title: "Step 2 of 4 · How should listening start?", ignoreFocusOut: true },
+    )
+    if (!pick) return
+    await updateSetting("listening.mode", pick.id)
+    if (pick.id === "wakeWord") {
+      const phrase = await vscode.window.showInputBox({
+        title: "Wake phrase",
+        prompt:
+          "Two or more words trigger far less by accident. Examples: Hey Twin · OK Twin · Computer listen · Jarvis",
+        value: s.wakePhrase,
+        ignoreFocusOut: true,
+        validateInput: (v) => (v.trim().length >= 3 ? undefined : "Use at least 3 letters"),
+      })
+      if (phrase) await updateSetting("listening.wakePhrase", phrase)
+      const endWord = await vscode.window.showInputBox({
+        title: "End word (optional)",
+        prompt: `Say this to finish a command immediately, e.g. "over" or "execute". Leave empty to finish by pausing ${s.pauseSeconds}s. A pause always works too.`,
+        value: s.endWord,
+        ignoreFocusOut: true,
+      })
+      if (endWord !== undefined) await updateSetting("listening.endWord", endWord)
+      const confirm = await vscode.window.showQuickPick(
+        [
+          {
+            label: "Show what I heard, then run after a 5-second countdown",
+            description: 'say "cancel" to stop',
+            id: "countdown",
+          },
+          { label: "Ask me every time", description: 'nothing runs until you say "yes"', id: "ask" },
+          { label: "Run immediately", description: "destructive commands still ask", id: "auto" },
+        ],
+        { title: "Confirmation", ignoreFocusOut: true },
+      )
+      if (confirm) await updateSetting("confirmation.mode", confirm.id)
+    }
+    await this.context.globalState.update("digitalTwinVoice.listeningChosen", true)
+    await this.sendState()
+  }
+
+  async chooseProvider(title = "Speech engine"): Promise<void> {
     const picks: Array<vscode.QuickPickItem & { id: SpeechProvider }> = [
       {
         id: "browser",
@@ -240,11 +394,9 @@ class VoiceController {
         detail: "Takes vocabulary hints from your workspace.",
       },
     ]
-    const pick = await vscode.window.showQuickPick(picks, { title: "Speech engine", ignoreFocusOut: true })
+    const pick = await vscode.window.showQuickPick(picks, { title, ignoreFocusOut: true })
     if (!pick) return
-    await vscode.workspace
-      .getConfiguration("digitalTwinVoice")
-      .update("speech.provider", pick.id, vscode.ConfigurationTarget.Global)
+    await updateSetting("speech.provider", pick.id)
     if (pick.id !== "browser" && !(await this.keys.speech(pick.id))) await this.setSpeechKey(pick.id)
     await this.sendState()
   }
@@ -296,31 +448,36 @@ class VoiceController {
   }
 
   async maybeShowFirstRun(): Promise<void> {
+    if (!settings().enabled) return
     if (this.context.globalState.get<boolean>(FIRST_RUN_KEY)) return
     await this.context.globalState.update(FIRST_RUN_KEY, true)
     if (await this.keys.anthropic()) return
     const choice = await vscode.window.showInformationMessage(
-      "Voice Control is installed. Talk to your Digital Twin: open terminals, run commands, hand tasks to Claude Code. Set it up now?",
-      "Set up",
+      "Voice Control is installed: talk to your Digital Twin to open terminals, run commands and hand tasks to Claude Code. It stays silent until you set it up.",
+      "Set up now",
       "Later",
+      "Turn off",
     )
-    if (choice === "Set up") {
-      await this.panel.reveal()
-      await this.setAnthropicKey()
+    if (choice === "Set up now") await this.runWizard()
+    else if (choice === "Turn off") {
+      await vscode.workspace
+        .getConfiguration("digitalTwinVoice")
+        .update("enabled", false, vscode.ConfigurationTarget.Global)
     }
   }
 
   // ---------------------------------------------------------------- pipeline
 
-  private async handleAudio(base64: string, mime: string): Promise<void> {
+  private async handleAudio(base64: string, mime: string, hint: string): Promise<void> {
     const s = settings()
     if (s.provider === "browser") {
+      if (hint) return this.handleTranscript(hint)
       this.broadcast({ type: "error", message: "Speech provider is 'browser'; audio clips are not expected." })
       return
     }
     const apiKey = await this.keys.speech(s.provider)
     if (!apiKey) {
-      this.broadcast({ type: "error", message: `No ${s.provider} API key. Add one in the setup card.` })
+      this.broadcast({ type: "error", message: `No ${s.provider} API key. Add one in Settings.` })
       return
     }
     const audio = Buffer.from(base64, "base64")
@@ -330,36 +487,53 @@ class VoiceController {
     }
     this.phase("transcribing", "Transcribing…")
     const tree = await snapshotTree()
-    const text = await transcribe({
-      provider: s.provider,
-      apiKey,
-      audio,
-      mime,
-      language: s.language,
-      vocabulary: vocabulary(this.registry, tree),
-      openaiModel: s.openaiModel,
-      deepgramModel: s.deepgramModel,
-    })
+    let text: string
+    try {
+      text = await transcribe({
+        provider: s.provider,
+        apiKey,
+        audio,
+        mime,
+        language: s.language,
+        vocabulary: vocabulary(this.registry, tree),
+        openaiModel: s.openaiModel,
+        deepgramModel: s.deepgramModel,
+      })
+    } catch (err) {
+      if (hint) {
+        this.output.appendLine(`[stt] ${errorText(err)}; falling back to browser transcript`)
+        text = hint
+      } else throw err
+    }
     await this.handleTranscript(text)
   }
 
   private async handleTranscript(raw: string): Promise<void> {
-    const text = raw.trim()
+    const s = settings()
+    let text = raw.trim()
+    if (s.endWord) text = stripEndWord(text, s.endWord)
     this.broadcast({ type: "transcript", text })
     if (!text) {
       this.phase("idle", "Didn't hear anything")
       return
     }
     if (this.pending) {
-      if (/^(yes|yeah|yep|yup|sure|confirm|confirmed|do it|go ahead|go|ok|okay|proceed)\b/i.test(text)) {
-        await this.resolvePending(true)
-        return
-      }
-      if (/^(no|nope|cancel|stop|abort|never ?mind|don'?t)\b/i.test(text)) {
-        await this.resolvePending(false)
-        return
-      }
+      if (YES.test(text)) return this.resolvePending(true)
+      if (NO.test(text)) return this.resolvePending(false)
       await this.resolvePending(false, true)
+    }
+    if (STOP_LISTENING.test(text)) {
+      this.broadcast({ type: "handsFree", start: false })
+      this.broadcast({
+        type: "actions",
+        heard: text,
+        items: [],
+        needsConfirm: false,
+        countdown: 0,
+        say: "Okay, I stopped listening.",
+      })
+      this.phase("idle")
+      return
     }
     if (this.busy) {
       this.broadcast({ type: "error", message: "Still working on the previous request." })
@@ -367,14 +541,13 @@ class VoiceController {
     }
     const apiKey = await this.keys.anthropic()
     if (!apiKey) {
-      this.broadcast({ type: "error", message: "Add your Anthropic API key first (setup card above)." })
+      this.broadcast({ type: "error", message: "Add your Anthropic API key first (Settings → Anthropic key)." })
       return
     }
     this.busy = true
     try {
       this.phase("thinking", "Thinking…")
       const tree = await snapshotTree()
-      const s = settings()
       this.output.appendLine(`[you] ${text}`)
       const result = await interpret({
         apiKey,
@@ -384,13 +557,21 @@ class VoiceController {
       })
       this.output.appendLine(`[claude] ${JSON.stringify(result)}`)
       const items = result.actions.map((a) => ({ label: describe(a), dangerous: isDangerous(a) }))
-      const needsConfirm = s.confirmDangerous && items.some((i) => i.dangerous)
-      this.broadcast({ type: "actions", items, needsConfirm, say: result.say })
-      if (needsConfirm) {
-        this.pending = result.actions
-        this.phase("confirm", "Waiting for confirmation")
-        clearTimeout(this.pendingTimer)
-        this.pendingTimer = setTimeout(() => void this.resolvePending(false), 45_000)
+      const dangerous = s.confirmDangerous && items.some((i) => i.dangerous)
+      const explicit = result.actions.length > 0 && (dangerous || s.confirmationMode === "ask")
+      const countdown =
+        !explicit && result.actions.length > 0 && s.confirmationMode === "countdown" ? s.countdownSeconds : 0
+      this.broadcast({ type: "actions", heard: text, items, needsConfirm: explicit, countdown, say: result.say })
+      if (!result.actions.length) {
+        this.phase("idle")
+        return
+      }
+      if (explicit || countdown) {
+        this.clearPending()
+        const pending: Pending = { actions: result.actions, heard: text }
+        pending.timer = setTimeout(() => void this.resolvePending(Boolean(countdown)), (countdown || 90) * 1000)
+        this.pending = pending
+        this.phase("confirm", countdown ? `Running in ${countdown}s unless you cancel` : "Waiting for confirmation")
         return
       }
       await this.runActions(result.actions, tree)
@@ -399,17 +580,30 @@ class VoiceController {
     }
   }
 
-  private async resolvePending(accept: boolean, silent = false): Promise<void> {
-    const actions = this.pending
+  private clearPending(): void {
+    if (this.pending?.timer) clearTimeout(this.pending.timer)
     this.pending = undefined
-    clearTimeout(this.pendingTimer)
-    if (!actions) return
+  }
+
+  private async resolvePending(accept: boolean, silent = false): Promise<void> {
+    const pending = this.pending
+    this.clearPending()
+    if (!pending) return
+    this.broadcast({ type: "pendingResolved", accepted: accept })
     if (!accept) {
-      if (!silent) this.broadcast({ type: "actions", items: [], needsConfirm: false, say: "Cancelled." })
+      if (!silent)
+        this.broadcast({
+          type: "actions",
+          heard: pending.heard,
+          items: [],
+          needsConfirm: false,
+          countdown: 0,
+          say: "Cancelled.",
+        })
       this.phase("idle")
       return
     }
-    await this.runActions(actions, await snapshotTree())
+    await this.runActions(pending.actions, await snapshotTree())
   }
 
   private async runActions(actions: Action[], tree: string[]): Promise<void> {
@@ -436,6 +630,16 @@ class VoiceController {
   }
 }
 
+/** Remove a trailing end word such as "over" or "execute" (with punctuation). */
+export function stripEndWord(text: string, endWord: string): string {
+  const escaped = endWord
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\s+/g, "\\s+")
+  if (!escaped) return text
+  return text.replace(new RegExp(`[\\s,.!?]*\\b${escaped}\\b[\\s.!?,]*$`, "i"), "").trim()
+}
+
 function errorText(err: unknown): string {
   if (err instanceof Anthropic.AuthenticationError)
     return "Anthropic rejected the API key. Set a new one with 'Voice: Set Anthropic API Key'."
@@ -449,11 +653,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const controller = new VoiceController(context)
   context.subscriptions.push(
     vscode.commands.registerCommand("digitalTwinVoice.toggleRecording", () => controller.toggleRecording()),
+    vscode.commands.registerCommand("digitalTwinVoice.toggleHandsFree", () => controller.toggleHandsFree()),
     vscode.commands.registerCommand("digitalTwinVoice.openPanel", () =>
       vscode.commands.executeCommand("digitalTwinVoice.panel.focus"),
     ),
     vscode.commands.registerCommand("digitalTwinVoice.openInBrowser", () => controller.openRemote()),
     vscode.commands.registerCommand("digitalTwinVoice.typeCommand", () => controller.typeCommand()),
+    vscode.commands.registerCommand("digitalTwinVoice.setup", () => controller.runWizard()),
     vscode.commands.registerCommand("digitalTwinVoice.setAnthropicKey", () => controller.setAnthropicKey()),
     vscode.commands.registerCommand("digitalTwinVoice.setSpeechKey", () => controller.setSpeechKey()),
     vscode.commands.registerCommand("digitalTwinVoice.claudeLogin", () => controller.claudeLogin()),

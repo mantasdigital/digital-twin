@@ -1,3 +1,4 @@
+import * as crypto from "crypto"
 import * as fs from "fs"
 import * as http from "http"
 import * as path from "path"
@@ -56,7 +57,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider, Transport 
     void this.view?.webview.postMessage(msg)
   }
 
-  /** Make sure the view exists and has booted, then deliver a message. */
+  /** Make sure the view exists and has booted. */
   async reveal(): Promise<void> {
     if (this.view) {
       this.view.show(false)
@@ -69,15 +70,19 @@ export class PanelViewProvider implements vscode.WebviewViewProvider, Transport 
 }
 
 /**
- * The same UI served on a local port. code-server's /proxy/<port>/ route puts
- * it behind the normal login, and vscode.env.asExternalUri gives the public URL.
- * Useful when the embedded webview cannot access the microphone, and for
- * controlling the IDE from a phone.
+ * The same UI served on a local port for a separate browser tab, a tablet or a
+ * phone. code-server's /proxy/<port>/ route puts it behind the normal login,
+ * and vscode.env.asExternalUri gives the public URL.
+ *
+ * A random token is required on the page and the websocket. Without it any
+ * process inside the container could connect to the loopback port and type
+ * commands into the user's terminals.
  */
 export class RemoteServer implements Transport {
   private server: http.Server | undefined
   private wss: WebSocketServer | undefined
   private port = 0
+  private token = ""
 
   constructor(
     private readonly extensionPath: string,
@@ -90,23 +95,46 @@ export class RemoteServer implements Transport {
 
   async start(preferredPort: number): Promise<number> {
     if (this.server) return this.port
+    this.token = crypto.randomBytes(24).toString("base64url")
     const mediaDir = path.join(this.extensionPath, "media")
     const server = http.createServer((req, res) => {
-      const url = (req.url || "/").split("?")[0]
+      const parsed = new URL(req.url || "/", "http://localhost")
+      const url = parsed.pathname
       if (url === "/" || url === "/index.html") {
+        if (!this.validToken(parsed.searchParams.get("t"))) {
+          res.writeHead(403, { "Content-Type": "text/plain" })
+          res.end("Voice Remote: open this page from the Voice panel in your IDE (the link carries a one-time token).")
+          return
+        }
         const nonce = randomNonce()
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
-          "Permissions-Policy": "microphone=(self)",
+          "Permissions-Policy": "microphone=(self), on-device-speech-recognition=(self)",
         })
         res.end(
           renderHtml({
             mode: "remote",
             nonce,
+            token: this.token,
             jsHref: "panel.js",
             cssHref: "panel.css",
-            csp: `default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self' ws: wss:; img-src 'self' data:; media-src blob: mediastream:;`,
+            csp: `default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self' ws: wss:; img-src 'self' data:; media-src blob: mediastream:; manifest-src 'self';`,
+          }),
+        )
+        return
+      }
+      if (url === "/manifest.webmanifest") {
+        res.writeHead(200, { "Content-Type": "application/manifest+json", "Cache-Control": "no-store" })
+        res.end(
+          JSON.stringify({
+            name: "Digital Twin Voice",
+            short_name: "Twin Voice",
+            start_url: `./?t=${this.token}`,
+            display: "standalone",
+            background_color: "#111318",
+            theme_color: "#111318",
+            icons: [{ src: "mic.svg", sizes: "any", type: "image/svg+xml" }],
           }),
         )
         return
@@ -135,7 +163,16 @@ export class RemoteServer implements Transport {
       res.writeHead(404)
       res.end("not found")
     })
-    const wss = new WebSocketServer({ server, path: "/ws" })
+    const wss = new WebSocketServer({ noServer: true })
+    server.on("upgrade", (req, socket, head) => {
+      const parsed = new URL(req.url || "/", "http://localhost")
+      if (parsed.pathname !== "/ws" || !this.validToken(parsed.searchParams.get("t"))) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n")
+        socket.destroy()
+        return
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req))
+    })
     wss.on("connection", (socket: WebSocket) => {
       socket.on("message", (raw) => {
         try {
@@ -157,6 +194,11 @@ export class RemoteServer implements Transport {
     return this.port
   }
 
+  private validToken(t: string | null): boolean {
+    if (!t || !this.token || t.length !== this.token.length) return false
+    return crypto.timingSafeEqual(Buffer.from(t), Buffer.from(this.token))
+  }
+
   send(msg: Record<string, unknown>): void {
     if (!this.wss) return
     const data = JSON.stringify(msg)
@@ -166,7 +208,7 @@ export class RemoteServer implements Transport {
   }
 
   async externalUrl(): Promise<string> {
-    const local = vscode.Uri.parse(`http://127.0.0.1:${this.port}/`)
+    const local = vscode.Uri.parse(`http://127.0.0.1:${this.port}/?t=${this.token}`)
     const external = await vscode.env.asExternalUri(local)
     return external.toString(true)
   }
@@ -185,16 +227,27 @@ interface HtmlOptions {
   jsHref: string
   cssHref: string
   csp: string
+  token?: string
 }
 
 export function renderHtml(o: HtmlOptions): string {
+  const remoteHead =
+    o.mode === "remote"
+      ? `<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#111318">
+<link rel="apple-touch-icon" href="mic.svg">`
+      : ""
   return `<!DOCTYPE html>
-<html lang="en" data-mode="${o.mode}">
+<html lang="en" data-mode="${o.mode}"${o.token ? ` data-token="${o.token}"` : ""}>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${o.csp}">
 <title>Voice Control</title>
+${remoteHead}
 <link rel="stylesheet" href="${o.cssHref}">
 </head>
 <body>
@@ -203,17 +256,21 @@ export function renderHtml(o: HtmlOptions): string {
     <span class="dot" id="statusDot"></span>
     <span id="statusText">Starting…</span>
     <span class="spacer"></span>
+    <button class="icon" id="btnEar" title="Hands-free: listen for the wake phrase">👂</button>
     <button class="icon" id="btnSpeak" title="Read replies aloud">🔊</button>
-    <button class="icon" id="btnSettings" title="Settings">⚙</button>
+    <button class="icon" id="btnSettingsToggle" title="Settings">⚙</button>
   </header>
 
   <section id="setup" class="card hidden">
     <h3>Set up voice control</h3>
-    <p class="muted">Takes a minute. Keys are stored on your server only.</p>
+    <p class="muted">Takes a minute. Keys stay on your server.</p>
     <ol class="steps">
       <li id="stepAnthropic"><span class="check"></span>
         <div><b>Anthropic API key</b> <span class="muted">turns what you say into actions</span></div>
         <button data-setup="anthropicKey">Enter key</button></li>
+      <li id="stepListening"><span class="check"></span>
+        <div><b>Listening</b> <span class="muted" id="listeningDesc"></span></div>
+        <button data-setup="listening">Choose</button></li>
       <li id="stepClaude"><span class="check"></span>
         <div><b>Claude Code login</b> <span class="muted">lets you hand tasks to Claude Code</span></div>
         <button data-setup="claudeLogin">Log in</button></li>
@@ -222,30 +279,62 @@ export function renderHtml(o: HtmlOptions): string {
         <button data-setup="provider">Choose</button>
         <button data-setup="speechKey" id="btnSpeechKey">Enter key</button></li>
     </ol>
+    <p class="muted small" id="setupHint"></p>
   </section>
 
   <section class="mic-area">
-    <button id="mic" class="mic" title="Start listening (Ctrl+Shift+Space)">
+    <button id="mic" class="mic" title="Tap to talk (Ctrl+Shift+Space)">
       <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M8 21h8"/></svg>
     </button>
-    <div id="hint" class="muted">Tap to talk, tap again to send. Shortcut: Ctrl+Shift+Space</div>
+    <div id="hint" class="muted">Tap to talk. Stop with a pause, the end word, or another tap.</div>
     <div id="micError" class="error hidden"></div>
   </section>
 
-  <section class="card" id="transcriptCard">
-    <div class="label">You said</div>
-    <div id="transcript" class="transcript muted">…</div>
+  <section class="card" id="heardCard">
+    <div class="label">Heard</div>
+    <div id="heard" class="transcript muted">…</div>
   </section>
 
   <section class="card hidden" id="actionsCard">
-    <div class="label">Actions</div>
+    <div class="label">Planned actions</div>
     <ul id="actions"></ul>
+    <div id="countdownRow" class="hidden">
+      <div class="bar"><div id="countdownBar"></div></div>
+      <div class="row">
+        <button class="primary" id="btnRunNow">Run now</button>
+        <button id="btnCancelCountdown">Cancel</button>
+        <span class="muted small">say "cancel" to stop, "yes" to run now</span>
+      </div>
+    </div>
     <div id="confirmRow" class="row hidden">
       <button class="primary" id="btnConfirm">Confirm</button>
       <button id="btnCancel">Cancel</button>
-      <span class="muted">or say "yes" / "no"</span>
+      <span class="muted small">or say "yes" / "no"</span>
     </div>
     <div id="reply" class="reply hidden"></div>
+  </section>
+
+  <section class="card hidden" id="settingsCard">
+    <div class="label">Settings</div>
+    <div class="grid">
+      <label>Listening <select data-setting="listening.mode"><option value="pushToTalk">Push-to-talk</option><option value="wakeWord">Wake word (hands-free)</option></select></label>
+      <label>Wake phrase <input data-setting="listening.wakePhrase" type="text" placeholder="Hey Twin"></label>
+      <label>End word (optional) <input data-setting="listening.endWord" type="text" placeholder="e.g. over"></label>
+      <label>Pause that ends a command (s) <input data-setting="listening.pauseSeconds" type="number" min="1.5" max="30" step="0.5"></label>
+      <label>Confirmation <select data-setting="confirmation.mode"><option value="ask">Ask every time</option><option value="countdown">Show, then run after countdown</option><option value="auto">Run immediately</option></select></label>
+      <label>Countdown (s) <input data-setting="confirmation.countdownSeconds" type="number" min="2" max="30" step="1"></label>
+      <label>Speech engine <select data-setting="speech.provider"><option value="browser">Browser (free)</option><option value="openai">OpenAI</option><option value="deepgram">Deepgram</option></select></label>
+      <label>Language <input data-setting="speech.language" type="text" placeholder="auto (e.g. en-US, lt)"></label>
+      <label class="check-row"><input data-setting="listening.autoStart" type="checkbox"> Start wake-word listening when the panel opens</label>
+      <label class="check-row"><input data-setting="listening.chime" type="checkbox"> Chime on wake / done</label>
+      <label class="check-row"><input data-setting="speakReplies" type="checkbox"> Speak replies</label>
+    </div>
+    <div class="row">
+      <button data-setup="speechKey">Speech API key</button>
+      <button data-setup="anthropicKey">Anthropic key</button>
+      <button id="btnAllSettings">All settings…</button>
+    </div>
+    <p class="muted small">Destructive commands always ask. The wake-word listener uses your browser's speech recognition; on Chrome 139+ it runs on-device when available.</p>
   </section>
 
   <section class="card">
@@ -259,7 +348,7 @@ export function renderHtml(o: HtmlOptions): string {
   </form>
 
   <footer class="muted small">
-    <a href="#" id="btnRemote">Open in a browser tab / on your phone</a>
+    <a href="#" id="btnRemote">Open on phone / tablet / new tab</a>
     <span id="modelInfo"></span>
   </footer>
 </div>
@@ -269,8 +358,5 @@ export function renderHtml(o: HtmlOptions): string {
 }
 
 function randomNonce(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-  let s = ""
-  for (let i = 0; i < 32; i++) s += chars[Math.floor(Math.random() * chars.length)]
-  return s
+  return crypto.randomBytes(16).toString("base64url")
 }

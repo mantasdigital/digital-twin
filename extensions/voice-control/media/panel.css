@@ -277,3 +277,90 @@ footer a {
   color: var(--vscode-textLink-foreground, #3794ff);
   text-decoration: none;
 }
+
+/* ---- v0.2: hands-free, countdown, settings editor, mobile ---- */
+.dot.armed {
+  background: #4fa3ff;
+  box-shadow: 0 0 0 4px rgba(79, 163, 255, 0.2);
+}
+button.icon.on {
+  background: rgba(79, 163, 255, 0.25);
+  border-radius: 4px;
+}
+.transcript .interim {
+  opacity: 0.55;
+  font-style: italic;
+}
+.bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+  margin-top: 8px;
+}
+.bar div {
+  height: 100%;
+  width: 100%;
+  background: var(--accent);
+  transition: width 0.1s linear;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.grid label.check-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+}
+.grid input[type="text"],
+.grid input[type="number"],
+.grid select {
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  color-scheme: dark;
+}
+html[data-mode="remote"] .grid {
+  grid-template-columns: 1fr 1fr;
+}
+html[data-mode="remote"] .grid label.check-row {
+  grid-column: 1 / -1;
+}
+@media (max-width: 480px) {
+  html[data-mode="remote"] .grid {
+    grid-template-columns: 1fr;
+  }
+}
+html.touch button {
+  min-height: 40px;
+}
+html.touch .steps button {
+  padding: 8px 12px;
+}
+html.touch #textForm input {
+  font-size: 16px;
+} /* prevents iOS zoom on focus */
+html[data-mode="remote"] #app {
+  padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+}
+html[data-mode="remote"] .mic-area {
+  padding: 14px 0;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

@@ -1,10 +1,18 @@
-/* Voice Control panel. Runs both inside the VS Code webview and as a standalone
-   page served by the extension (opened through code-server's port proxy). */
+/* Voice Control panel. Runs inside the VS Code webview and as the standalone
+   Voice Remote page (desktop tab, tablet, phone) served by the extension. */
 ;(function () {
   "use strict"
 
-  const mode = document.documentElement.dataset.mode
+  const root = document.documentElement
+  const mode = root.dataset.mode
+  const token = root.dataset.token || ""
+  const clientId = (mode === "webview" ? "panel-" : "remote-") + Math.random().toString(36).slice(2, 8)
   const $ = (id) => document.getElementById(id)
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+  const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0
+  const isIOS =
+    /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  if (isTouch) root.classList.add("touch")
 
   // ------------------------------------------------------------ transport
   let post
@@ -22,10 +30,10 @@
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss:" : "ws:"
       const base = location.pathname.replace(/\/[^/]*$/, "")
-      ws = new WebSocket(`${proto}//${location.host}${base}/ws`)
+      ws = new WebSocket(`${proto}//${location.host}${base}/ws?t=${encodeURIComponent(token)}`)
       ws.onopen = () => {
         while (queue.length) ws.send(JSON.stringify(queue.shift()))
-        post({ type: "ready" })
+        post({ type: "ready", clientId, kind: "remote", ua: navigator.userAgent })
         setStatus("ok", "Connected")
       }
       ws.onmessage = (e) => {
@@ -48,9 +56,21 @@
     sttMode: "browser",
     language: "",
     speakReplies: true,
-    recording: false,
+    listening: {
+      mode: "pushToTalk",
+      wakePhrase: "Hey Twin",
+      wakeAliases: [],
+      endWord: "",
+      pauseSeconds: 5,
+      maxCommandSeconds: 60,
+      autoStart: true,
+      chime: true,
+      preferOnDevice: true,
+    },
+    confirmation: { mode: "countdown", countdownSeconds: 5 },
+    handsFreeOwner: null,
     busy: false,
-    needsConfirm: false,
+    gotState: false,
   }
   let speakEnabled = true
   try {
@@ -73,16 +93,20 @@
         break
       case "status":
         state.busy = msg.phase !== "idle" && msg.phase !== "confirm"
-        $("mic").classList.toggle("busy", state.busy && !state.recording)
-        if (msg.phase === "idle") setStatus("ok", msg.text || "Ready")
+        $("mic").classList.toggle("busy", state.busy && cap.phase !== "capture")
+        if (msg.phase === "idle") idleStatus(msg.text)
         else if (msg.phase === "confirm") setStatus("busy", msg.text || "Confirm?")
         else setStatus("busy", msg.text || msg.phase)
         break
       case "transcript":
-        showTranscript(msg.text, false)
+        showHeard(msg.text, "")
         break
       case "actions":
-        showActions(msg.items || [], msg.needsConfirm, msg.say)
+        showActions(msg)
+        break
+      case "pendingResolved":
+        stopCountdown()
+        cancelWindow(false)
         break
       case "results":
         showResults(msg.items || [])
@@ -91,30 +115,78 @@
         showError(msg.message)
         break
       case "record":
-        if (msg.start && !state.recording) startRecording()
-        else if (!msg.start && state.recording) stopRecording()
+        if (msg.start && cap.phase !== "capture") startCapture("tap")
+        else if (!msg.start && cap.phase === "capture") finishCapture("tap")
+        break
+      case "handsFree":
+        if (msg.start && !hf.armed && mode === "webview") arm()
+        else if (!msg.start && hf.armed) disarm()
         break
     }
   }
 
+  function idleStatus(text) {
+    if (hf.armed) setStatus("armed", text || `Listening for "${state.listening.wakePhrase}"`)
+    else setStatus("ok", text || "Ready")
+  }
+
   function applyState(s) {
+    const first = !state.gotState
+    state.gotState = true
     state.sttMode = s.sttMode
     state.language = s.language || ""
     state.speakReplies = s.speakReplies !== false
+    state.listening = Object.assign(state.listening, s.listening || {})
+    state.confirmation = Object.assign(state.confirmation, s.confirmation || {})
+    state.handsFreeOwner = s.handsFreeOwner || null
     const setup = s.setup || {}
-    const card = $("setup")
-    card.classList.toggle("hidden", Boolean(setup.complete && setup.claudeLogin))
+
+    if (s.enabled === false) {
+      setStatus("", "Voice Control is turned off in settings")
+      $("mic").disabled = true
+      return
+    }
+    $("mic").disabled = false
+
+    // Setup card
+    $("setup").classList.toggle("hidden", Boolean(setup.complete && setup.claudeLogin))
     $("stepAnthropic").classList.toggle("done", Boolean(setup.anthropic))
+    $("stepListening").classList.toggle("done", Boolean(setup.listeningChosen))
     $("stepClaude").classList.toggle("done", Boolean(setup.claudeLogin))
     $("stepSpeech").classList.toggle("done", Boolean(setup.speechKey))
-    const desc = { browser: "browser built-in (free)", openai: "OpenAI gpt-4o-transcribe", deepgram: "Deepgram Nova-3" }
-    $("speechDesc").textContent = desc[s.provider] || s.provider
+    const speechDesc = {
+      browser: "browser built-in (free)",
+      openai: "OpenAI gpt-4o-transcribe",
+      deepgram: "Deepgram Nova-3",
+    }
+    $("speechDesc").textContent = speechDesc[s.provider] || s.provider
+    $("listeningDesc").textContent =
+      state.listening.mode === "wakeWord"
+        ? `hands-free, wake phrase "${state.listening.wakePhrase}"`
+        : "push-to-talk (tap or shortcut)"
     $("btnSpeechKey").classList.toggle("hidden", s.provider === "browser")
+    $("setupHint").textContent =
+      mode === "remote" ? "Keys and choices are entered in the IDE window; this page follows them." : ""
     $("modelInfo").textContent = `${s.model} · ${s.provider}`
     renderTerminals(s.terminals || [])
+    fillSettings(s)
+
+    // Hands-free visibility / ownership
+    const wake = state.listening.mode === "wakeWord"
+    $("btnEar").classList.toggle("hidden", !wake || !SR)
+    if (hf.armed && state.handsFreeOwner && state.handsFreeOwner !== clientId) disarm(true) // another device took over
+    if (!wake && hf.armed) disarm()
+    if (wake && first && state.listening.autoStart && mode === "webview" && !state.handsFreeOwner && setup.anthropic)
+      arm()
+    if (hf.armed) startWakeIfNeeded()
+
+    $("hint").textContent = wake
+      ? `Say "${state.listening.wakePhrase}", then your command. Or tap to talk.${state.listening.endWord ? ` End with "${state.listening.endWord}" or a ${state.listening.pauseSeconds}s pause.` : ` A ${state.listening.pauseSeconds}s pause ends it.`}`
+      : `Tap to talk. Stop with a ${state.listening.pauseSeconds}s pause${state.listening.endWord ? `, the word "${state.listening.endWord}"` : ""} or another tap.`
     if (!setup.anthropic) setStatus("", "Needs setup")
-    else if (!state.recording && !state.busy) setStatus("ok", "Ready")
+    else if (cap.phase !== "capture" && !state.busy) idleStatus()
     $("btnSpeak").classList.toggle("off", !speakEnabled)
+    $("btnEar").classList.toggle("on", hf.armed)
   }
 
   function renderTerminals(list) {
@@ -135,15 +207,62 @@
     }
   }
 
-  function showTranscript(text, interim) {
-    const el = $("transcript")
-    el.textContent = text || "…"
-    el.classList.toggle("interim", Boolean(interim))
-    el.classList.toggle("muted", !text)
+  // ------------------------------------------------------------ settings editor
+  let fillingSettings = false
+  function fillSettings(s) {
+    fillingSettings = true
+    const values = {
+      "listening.mode": state.listening.mode,
+      "listening.wakePhrase": state.listening.wakePhrase,
+      "listening.endWord": state.listening.endWord,
+      "listening.pauseSeconds": state.listening.pauseSeconds,
+      "listening.autoStart": state.listening.autoStart,
+      "listening.chime": state.listening.chime,
+      "confirmation.mode": state.confirmation.mode,
+      "confirmation.countdownSeconds": state.confirmation.countdownSeconds,
+      "speech.provider": s.provider,
+      "speech.language": state.language,
+      speakReplies: state.speakReplies,
+    }
+    for (const el of document.querySelectorAll("[data-setting]")) {
+      const v = values[el.dataset.setting]
+      if (v === undefined) continue
+      if (el.type === "checkbox") el.checked = Boolean(v)
+      else if (document.activeElement !== el) el.value = String(v)
+    }
+    fillingSettings = false
+  }
+  for (const el of document.querySelectorAll("[data-setting]")) {
+    el.addEventListener("change", () => {
+      if (fillingSettings) return
+      let value = el.type === "checkbox" ? el.checked : el.value
+      if (el.type === "number") value = parseFloat(value)
+      post({ type: "setSetting", key: el.dataset.setting, value })
+    })
   }
 
-  function showActions(items, needsConfirm, say) {
-    const card = $("actionsCard")
+  // ------------------------------------------------------------ heard / actions UI
+  function showHeard(finalText, interim) {
+    const el = $("heard")
+    el.innerHTML = ""
+    if (!finalText && !interim) {
+      el.textContent = "…"
+      el.className = "transcript muted"
+      return
+    }
+    el.className = "transcript"
+    el.appendChild(document.createTextNode(finalText || ""))
+    if (interim) {
+      const i = document.createElement("span")
+      i.className = "interim"
+      i.textContent = (finalText ? " " : "") + interim
+      el.appendChild(i)
+    }
+  }
+
+  let countdownTimer = null
+  function showActions(msg) {
+    const items = msg.items || []
     const ul = $("actions")
     ul.innerHTML = ""
     for (const it of items) {
@@ -152,14 +271,42 @@
       if (it.dangerous) li.classList.add("dangerous")
       ul.appendChild(li)
     }
-    state.needsConfirm = Boolean(needsConfirm)
-    $("confirmRow").classList.toggle("hidden", !needsConfirm)
+    if (msg.heard) showHeard(msg.heard, "")
+    $("confirmRow").classList.toggle("hidden", !msg.needsConfirm)
     const reply = $("reply")
-    reply.textContent = say || ""
-    reply.classList.toggle("hidden", !say)
-    card.classList.toggle("hidden", !items.length && !say)
-    if (say) speak(say)
-    if (needsConfirm) speak("This looks destructive. Say yes to confirm.")
+    reply.textContent = msg.say || ""
+    reply.classList.toggle("hidden", !msg.say)
+    $("actionsCard").classList.toggle("hidden", !items.length && !msg.say)
+    stopCountdown()
+    if (msg.countdown > 0) startCountdown(msg.countdown)
+    if (msg.say) speak(msg.say)
+    else if (msg.needsConfirm)
+      speak(items.some((i) => i.dangerous) ? "This looks destructive. Say yes to confirm." : "Say yes to run this.")
+    else if (msg.countdown > 0 && items.length) speak(summarize(items))
+    if (msg.needsConfirm || msg.countdown > 0) cancelWindow(true)
+  }
+
+  function summarize(items) {
+    const first = items[0].label.replace(/^(Run|Type) in .*?: /, "Running ")
+    return items.length > 1 ? `${first}, plus ${items.length - 1} more.` : first + "."
+  }
+
+  function startCountdown(seconds) {
+    const row = $("countdownRow")
+    const bar = $("countdownBar")
+    row.classList.remove("hidden")
+    const start = Date.now()
+    bar.style.width = "100%"
+    countdownTimer = setInterval(() => {
+      const left = Math.max(0, seconds * 1000 - (Date.now() - start))
+      bar.style.width = (left / (seconds * 1000)) * 100 + "%"
+      if (left <= 0) stopCountdown()
+    }, 100)
+  }
+  function stopCountdown() {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+    $("countdownRow").classList.add("hidden")
   }
 
   function showResults(items) {
@@ -179,9 +326,46 @@
     el.classList.remove("hidden")
     setStatus("", "Error")
     clearTimeout(showError.t)
-    showError.t = setTimeout(() => el.classList.add("hidden"), 8000)
+    showError.t = setTimeout(() => el.classList.add("hidden"), 9000)
   }
 
+  // ------------------------------------------------------------ sound
+  let audioCtx = null
+  let ttsSpeaking = false
+  let lastTtsEnd = 0
+  function unlockAudio() {
+    // iOS/Android need a user gesture before sound; do it on the first tap.
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      if (audioCtx.state === "suspended") audioCtx.resume()
+      if ("speechSynthesis" in window && !unlockAudio.done) {
+        const u = new SpeechSynthesisUtterance("")
+        u.volume = 0
+        window.speechSynthesis.speak(u)
+      }
+      unlockAudio.done = true
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  function chime(kind) {
+    if (!state.listening.chime || !audioCtx) return
+    try {
+      const o = audioCtx.createOscillator()
+      const g = audioCtx.createGain()
+      o.type = "sine"
+      o.frequency.value = kind === "wake" ? 880 : kind === "done" ? 660 : 440
+      g.gain.value = 0.0001
+      o.connect(g).connect(audioCtx.destination)
+      const t = audioCtx.currentTime
+      g.gain.exponentialRampToValueAtTime(0.2, t + 0.02)
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18)
+      o.start(t)
+      o.stop(t + 0.2)
+    } catch (e) {
+      /* ignore */
+    }
+  }
   function speak(text) {
     if (!speakEnabled || !state.speakReplies || !("speechSynthesis" in window)) return
     try {
@@ -189,156 +373,441 @@
       const u = new SpeechSynthesisUtterance(text)
       if (state.language) u.lang = state.language
       u.rate = 1.05
+      u.onstart = () => {
+        ttsSpeaking = true
+      }
+      u.onend = u.onerror = () => {
+        ttsSpeaking = false
+        lastTtsEnd = Date.now()
+      }
       window.speechSynthesis.speak(u)
     } catch (e) {
       /* ignore */
     }
   }
 
-  // ------------------------------------------------------------ recording
-  let recognition = null
-  let recorder = null
-  let chunks = []
-  let stream = null
-  let maxTimer = null
+  // ------------------------------------------------------------ text helpers
+  function norm(s) {
+    return (s || "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  }
+  function levenshtein(a, b) {
+    const m = a.length
+    const n = b.length
+    if (!m) return n
+    if (!n) return m
+    let prev = Array.from({ length: n + 1 }, (_, i) => i)
+    for (let i = 1; i <= m; i++) {
+      const cur = [i]
+      for (let j = 1; j <= n; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+      }
+      prev = cur
+    }
+    return prev[n]
+  }
+  /** Find the wake phrase (or an alias) in text; return the text after it, or null. */
+  function matchWake(text) {
+    const t = norm(text)
+    if (!t) return null
+    const phrases = [state.listening.wakePhrase]
+      .concat(state.listening.wakeAliases || [])
+      .map(norm)
+      .filter(Boolean)
+    const words = t.split(" ")
+    for (const phrase of phrases) {
+      const pw = phrase.split(" ").length
+      const tol = Math.max(1, Math.floor(phrase.replace(/ /g, "").length / 4))
+      for (let i = 0; i + pw <= words.length; i++) {
+        const span = words.slice(i, i + pw).join(" ")
+        if (span === phrase || levenshtein(span.replace(/ /g, ""), phrase.replace(/ /g, "")) <= tol) {
+          return words.slice(i + pw).join(" ")
+        }
+      }
+    }
+    return null
+  }
+  function endsWithEndWord(text) {
+    const ew = norm(state.listening.endWord)
+    if (!ew) return false
+    const t = norm(text)
+    return t === ew || t.endsWith(" " + ew)
+  }
+  function stripEndWord(text) {
+    const ew = norm(state.listening.endWord)
+    if (!ew) return text.trim()
+    const t = text.trim()
+    const re = new RegExp(
+      "[\\s,.!?]*\\b" + ew.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+") + "\\b[\\s.!?,]*$",
+      "i",
+    )
+    return t.replace(re, "").trim()
+  }
+  const STOP_WORDS = /^(stop|pause|disable) (listening|hands ?free)|^go to sleep\b|^sleep now\b/i
+  const CANCEL_WORDS = /^(no|nope|cancel|stop|abort|never ?mind|don'?t|wait)\b/i
+  const YES_WORDS = /^(yes|yeah|yep|yup|sure|confirm|confirmed|do it|run it|go ahead|go|ok|okay|proceed|run now)\b/i
 
-  function setRecording(active) {
-    state.recording = active
-    $("mic").classList.toggle("recording", active)
-    $("mic").classList.remove("busy")
-    setStatus(active ? "recording" : "ok", active ? "Listening… tap to send" : "Ready")
-    post({ type: "recording", active })
+  // ------------------------------------------------------------ recognizer (wake word + command text)
+  const hf = { armed: false, rec: null, restartTimer: null, stopping: false, backoff: 300, onDevice: false }
+  const cap = {
+    phase: "idle",
+    source: null,
+    buffer: "",
+    interim: "",
+    silenceTimer: null,
+    maxTimer: null,
+    recorder: null,
+    stream: null,
+    vad: null,
+    cancelWin: false,
   }
 
-  async function startRecording() {
+  async function configureOnDevice(rec) {
+    if (!state.listening.preferOnDevice || !SR.available) return
+    try {
+      const langs = [state.language || navigator.language || "en-US"]
+      const status = await SR.available({ langs, processLocally: true })
+      if (status === "available") {
+        rec.processLocally = true
+        hf.onDevice = true
+      } else if (status === "downloadable" && !configureOnDevice.installing) {
+        configureOnDevice.installing = true
+        SR.install({ langs, processLocally: true }).catch(() => {})
+      }
+    } catch (e) {
+      /* fall back to default recognition */
+    }
+  }
+
+  /** One continuous recognizer serves wake detection, command text and cancel words. */
+  async function startRecognizer() {
+    if (!SR || hf.rec) return
+    const rec = new SR()
+    rec.continuous = true
+    rec.interimResults = true
+    rec.maxAlternatives = 1
+    if (state.language) rec.lang = state.language
+    if (hf.armed) await configureOnDevice(rec)
+    rec.onresult = onRecResult
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        hf.rec = null
+        micFailure({ name: "NotAllowedError", message: e.message || e.error })
+        disarm()
+        if (cap.phase === "capture") abortCapture()
+        return
+      }
+      if (e.error === "network") hf.backoff = Math.min(8000, hf.backoff * 2)
+      // no-speech / aborted / audio-capture: onend follows and restarts if needed
+    }
+    rec.onend = () => {
+      hf.rec = null
+      if (hf.stopping) return
+      if (hf.armed || cap.phase === "capture" || cap.cancelWin) {
+        clearTimeout(hf.restartTimer)
+        hf.restartTimer = setTimeout(() => {
+          hf.backoff = Math.min(hf.backoff, 2000)
+          startRecognizer()
+        }, hf.backoff)
+      }
+    }
+    try {
+      rec.start()
+      hf.rec = rec
+      hf.backoff = 300
+    } catch (err) {
+      hf.rec = null
+      if (!/already started/i.test(String(err && err.message))) micFailure(err)
+    }
+  }
+  function stopRecognizer() {
+    hf.stopping = true
+    clearTimeout(hf.restartTimer)
+    try {
+      hf.rec && hf.rec.stop()
+    } catch (e) {
+      /* ignore */
+    }
+    hf.rec = null
+    setTimeout(() => {
+      hf.stopping = false
+    }, 50)
+  }
+  function startWakeIfNeeded() {
+    if ((hf.armed || cap.phase === "capture" || cap.cancelWin) && !hf.rec) startRecognizer()
+    else if (!hf.armed && cap.phase !== "capture" && !cap.cancelWin && hf.rec) stopRecognizer()
+  }
+
+  function onRecResult(e) {
+    if (ttsSpeaking || Date.now() - lastTtsEnd < 800) return // never react to our own voice
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i]
+      const text = r[0].transcript
+      const isFinal = r.isFinal
+      if (cap.cancelWin) {
+        if (isFinal) {
+          const t = norm(text)
+          if (CANCEL_WORDS.test(t)) post({ type: "confirm", accept: false })
+          else if (YES_WORDS.test(t)) post({ type: "confirm", accept: true })
+        }
+        continue
+      }
+      if (cap.phase === "capture") {
+        // The same utterance keeps updating with the wake phrase in front of
+        // it ("hey twin open a terminal"); keep only what follows the phrase.
+        const afterWake = cap.source === "wake" ? matchWake(text) : null
+        const spoken = afterWake !== null ? afterWake : text
+        if (isFinal) {
+          cap.buffer = (cap.buffer + " " + spoken).trim()
+          cap.interim = ""
+        } else cap.interim = spoken
+        showHeard(cap.buffer, cap.interim)
+        resetSilence()
+        const whole = (cap.buffer + " " + cap.interim).trim()
+        if (STOP_WORDS.test(norm(whole))) {
+          abortCapture()
+          disarm()
+          speak("Okay, I stopped listening.")
+          return
+        }
+        if (endsWithEndWord(whole) && (isFinal || cap.interim)) finishCapture("endword")
+        continue
+      }
+      if (hf.armed) {
+        const after = matchWake(text)
+        if (after !== null) {
+          // Prefill as interim either way; the final result for this utterance
+          // lands in the capture branch above and becomes the buffer.
+          startCapture("wake", "", after)
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ capture (one command)
+  function startCapture(source, prefill, interim) {
+    if (cap.phase === "capture") return
+    unlockAudio()
     $("micError").classList.add("hidden")
-    if (state.sttMode === "browser") return startBrowserRecognition()
-    return startMediaRecorder()
+    cap.phase = "capture"
+    cap.source = source
+    cap.buffer = prefill || ""
+    cap.interim = interim || ""
+    showHeard(cap.buffer, cap.interim)
+    $("mic").classList.add("recording")
+    $("mic").classList.remove("busy")
+    setStatus("recording", source === "wake" ? "Yes? Listening…" : "Listening… tap, pause or end word to send")
+    post({ type: "recording", active: true })
+    if (source === "wake") chime("wake")
+    clearTimeout(cap.maxTimer)
+    cap.maxTimer = setTimeout(() => finishCapture("max"), state.listening.maxCommandSeconds * 1000)
+    resetSilence()
+    if (state.sttMode === "record") startRecorder()
+    else if (!SR) {
+      showError("This browser has no speech recognition. Switch the speech engine to OpenAI or Deepgram in Settings.")
+      abortCapture()
+      return
+    }
+    if (SR) startWakeIfNeeded() // recognizer provides text / end word / pause timing
   }
 
-  function stopRecording() {
-    if (recognition) {
+  function resetSilence() {
+    clearTimeout(cap.silenceTimer)
+    if (cap.phase !== "capture") return
+    cap.silenceTimer = setTimeout(() => finishCapture("pause"), state.listening.pauseSeconds * 1000)
+  }
+
+  function finishCapture(reason) {
+    if (cap.phase !== "capture") return
+    cap.phase = "idle"
+    clearTimeout(cap.silenceTimer)
+    clearTimeout(cap.maxTimer)
+    const text = stripEndWord((cap.buffer + " " + cap.interim).trim())
+    cap.buffer = ""
+    cap.interim = ""
+    $("mic").classList.remove("recording")
+    post({ type: "recording", active: false })
+    if (state.sttMode === "record" && cap.recorder) {
+      stopRecorder(text) // sends audio (browser text goes along as a fallback hint)
+    } else if (text) {
+      chime("done")
+      showHeard(text, "")
+      setStatus("busy", "Sending…")
+      post({ type: "transcript", text })
+    } else {
+      idleStatus(reason === "wake" ? "" : "Didn't catch that")
+    }
+    startWakeIfNeeded()
+  }
+
+  function abortCapture() {
+    if (cap.phase !== "capture") return
+    cap.phase = "idle"
+    clearTimeout(cap.silenceTimer)
+    clearTimeout(cap.maxTimer)
+    cap.buffer = ""
+    cap.interim = ""
+    $("mic").classList.remove("recording")
+    post({ type: "recording", active: false })
+    if (cap.recorder) {
+      cap.recorder.onstop = null
       try {
-        recognition.stop()
+        cap.recorder.stop()
       } catch (e) {
         /* ignore */
       }
-      return
+      cap.recorder = null
     }
-    if (recorder && recorder.state !== "inactive") recorder.stop()
+    stopVad()
+    if (cap.stream) cap.stream.getTracks().forEach((t) => t.stop())
+    cap.stream = null
+    idleStatus()
+    startWakeIfNeeded()
   }
 
+  function cancelWindow(on) {
+    cap.cancelWin = Boolean(on) && Boolean(SR)
+    startWakeIfNeeded()
+  }
+
+  // ------------------------------------------------------------ hands-free arm/disarm
+  function arm() {
+    if (!SR) {
+      showError("Hands-free needs browser speech recognition (Chrome, Edge or Safari).")
+      return
+    }
+    unlockAudio()
+    hf.armed = true
+    $("btnEar").classList.add("on")
+    post({ type: "handsFree", active: true, clientId })
+    startWakeIfNeeded()
+    idleStatus()
+  }
+  function disarm(silent) {
+    const was = hf.armed
+    hf.armed = false
+    $("btnEar").classList.remove("on")
+    if (was && !silent) post({ type: "handsFree", active: false, clientId })
+    startWakeIfNeeded()
+    if (cap.phase !== "capture") idleStatus()
+  }
+
+  // ------------------------------------------------------------ recorder (high-quality STT path)
   function micFailure(err) {
     const name = err && err.name
     let msg = "Microphone unavailable: " + (err && err.message ? err.message : name || err)
     if (name === "NotAllowedError" || name === "SecurityError" || /permission|denied|not allowed/i.test(msg)) {
       msg =
         mode === "webview"
-          ? 'Microphone is blocked inside this panel. Allow it in the browser\'s site settings, or use "Open in a browser tab" below.'
+          ? 'Microphone is blocked inside this panel. Allow it in the browser\'s site settings, or use "Open on phone / tablet / new tab" below.'
           : "Microphone permission denied. Allow it in your browser's site settings and reload."
-    } else if (name === "NotFoundError") {
-      msg = "No microphone found."
-    }
+    } else if (name === "NotFoundError") msg = "No microphone found."
     showError(msg)
-    setRecording(false)
     post({ type: "log", text: `mic failure: ${name} ${err && err.message}` })
   }
 
-  function startBrowserRecognition() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SR) {
+  async function startRecorder() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
       showError(
-        "This browser has no built-in speech recognition. Use Chrome/Edge/Safari, or switch the speech engine to OpenAI or Deepgram in settings.",
+        'Audio recording is not available here. Use "Open on phone / tablet / new tab", or switch the speech engine to Browser.',
       )
+      abortCapture()
       return
     }
-    recognition = new SR()
-    recognition.continuous = false
-    recognition.interimResults = true
-    recognition.maxAlternatives = 1
-    if (state.language) recognition.lang = state.language
-    let finalText = ""
-    recognition.onresult = (e) => {
-      let interim = ""
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i]
-        if (r.isFinal) finalText += r[0].transcript
-        else interim += r[0].transcript
-      }
-      showTranscript(finalText + interim, true)
-    }
-    recognition.onerror = (e) => {
-      recognition = null
-      if (e.error === "no-speech") {
-        setRecording(false)
-        setStatus("ok", "Didn't hear anything")
-        return
-      }
-      if (e.error === "aborted") {
-        setRecording(false)
-        return
-      }
-      micFailure({ name: e.error === "not-allowed" ? "NotAllowedError" : e.error, message: e.message || e.error })
-    }
-    recognition.onend = () => {
-      recognition = null
-      setRecording(false)
-      const text = finalText.trim()
-      if (text) post({ type: "transcript", text })
-    }
     try {
-      recognition.start()
-      showTranscript("", false)
-      setRecording(true)
+      cap.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      })
     } catch (err) {
-      recognition = null
       micFailure(err)
+      abortCapture()
+      return
+    }
+    if (cap.phase !== "capture") {
+      cap.stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((m) =>
+      MediaRecorder.isTypeSupported(m),
+    )
+    const chunks = []
+    try {
+      cap.recorder = new MediaRecorder(cap.stream, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined)
+    } catch (err) {
+      micFailure(err)
+      abortCapture()
+      return
+    }
+    cap.recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data)
+    }
+    cap.recorder.onstop = async () => {
+      const rec = cap.recorder
+      cap.recorder = null
+      stopVad()
+      if (cap.stream) cap.stream.getTracks().forEach((t) => t.stop())
+      cap.stream = null
+      const blob = new Blob(chunks, { type: (rec && rec.mimeType) || mime || "audio/webm" })
+      if (blob.size < 1000) {
+        idleStatus("Too short")
+        return
+      }
+      chime("done")
+      setStatus("busy", "Uploading…")
+      const data = await blobToBase64(blob)
+      post({ type: "audio", mime: blob.type, data, hint: cap.lastHint || "" })
+    }
+    cap.recorder.start(250)
+    startVad(cap.stream) // energy-based pause detection, works without SpeechRecognition (Firefox)
+  }
+  function stopRecorder(hintText) {
+    cap.lastHint = hintText || ""
+    try {
+      if (cap.recorder && cap.recorder.state !== "inactive") cap.recorder.stop()
+    } catch (e) {
+      /* ignore */
     }
   }
 
-  async function startMediaRecorder() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showError('Audio recording is not available in this browser context. Use "Open in a browser tab".')
-      return
-    }
+  function startVad(stream) {
+    if (!audioCtx) return
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
-    } catch (err) {
-      micFailure(err)
-      return
+      const src = audioCtx.createMediaStreamSource(stream)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 1024
+      src.connect(analyser)
+      const buf = new Uint8Array(analyser.fftSize)
+      let spoke = false
+      cap.vad = setInterval(() => {
+        analyser.getByteTimeDomainData(buf)
+        let sum = 0
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128
+          sum += v * v
+        }
+        const rms = Math.sqrt(sum / buf.length)
+        if (rms > 0.03) {
+          spoke = true
+          resetSilence()
+        } else if (!spoke) resetSilence() // keep waiting while the user has not started yet
+      }, 150)
+      cap.vadNodes = { src, analyser }
+    } catch (e) {
+      /* ignore */
     }
-    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find(
-      (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m),
-    )
-    chunks = []
+  }
+  function stopVad() {
+    clearInterval(cap.vad)
+    cap.vad = null
     try {
-      recorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined)
-    } catch (err) {
-      stream.getTracks().forEach((t) => t.stop())
-      micFailure(err)
-      return
+      cap.vadNodes && cap.vadNodes.src.disconnect()
+    } catch (e) {
+      /* ignore */
     }
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size) chunks.push(e.data)
-    }
-    recorder.onstop = async () => {
-      clearTimeout(maxTimer)
-      stream.getTracks().forEach((t) => t.stop())
-      const blob = new Blob(chunks, { type: recorder.mimeType || mime || "audio/webm" })
-      recorder = null
-      setRecording(false)
-      if (blob.size < 1000) {
-        setStatus("ok", "Too short")
-        return
-      }
-      setStatus("busy", "Uploading…")
-      const data = await blobToBase64(blob)
-      post({ type: "audio", mime: blob.type, data })
-    }
-    recorder.start(250)
-    showTranscript("", false)
-    setRecording(true)
-    maxTimer = setTimeout(() => recorder && recorder.state !== "inactive" && recorder.stop(), 60000)
+    cap.vadNodes = null
   }
 
   function blobToBase64(blob) {
@@ -352,16 +821,21 @@
 
   // ------------------------------------------------------------ UI wiring
   $("mic").addEventListener("click", () => {
-    if (state.recording) stopRecording()
-    else startRecording()
+    unlockAudio()
+    if (cap.phase === "capture") finishCapture("tap")
+    else startCapture("tap")
   })
+  $("btnEar").addEventListener("click", () => (hf.armed ? disarm() : arm()))
   $("btnConfirm").addEventListener("click", () => post({ type: "confirm", accept: true }))
   $("btnCancel").addEventListener("click", () => post({ type: "confirm", accept: false }))
+  $("btnRunNow").addEventListener("click", () => post({ type: "confirm", accept: true }))
+  $("btnCancelCountdown").addEventListener("click", () => post({ type: "confirm", accept: false }))
   $("btnRemote").addEventListener("click", (e) => {
     e.preventDefault()
     post({ type: "openRemote" })
   })
-  $("btnSettings").addEventListener("click", () => post({ type: "openSettings" }))
+  $("btnSettingsToggle").addEventListener("click", () => $("settingsCard").classList.toggle("hidden"))
+  $("btnAllSettings").addEventListener("click", () => post({ type: "openSettings" }))
   $("btnSpeak").addEventListener("click", () => {
     speakEnabled = !speakEnabled
     try {
@@ -380,14 +854,24 @@
     const text = input.value.trim()
     if (!text) return
     input.value = ""
+    showHeard(text, "")
     post({ type: "text", text })
   })
   document.addEventListener("keydown", (e) => {
     if (e.code === "Space" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
       e.preventDefault()
-      state.recording ? stopRecording() : startRecording()
+      if (e.altKey) hf.armed ? disarm() : arm()
+      else cap.phase === "capture" ? finishCapture("tap") : startCapture("tap")
     }
   })
+  // iOS Safari stops recognition when the page is hidden; resume when it returns.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") startWakeIfNeeded()
+  })
+  window.addEventListener("pagehide", () => {
+    if (hf.armed) disarm()
+  })
+  if (isIOS) $("hint").textContent += " On iPhone/iPad keep this page open; the screen lock stops the microphone."
 
-  if (mode === "webview") post({ type: "ready" })
+  if (mode === "webview") post({ type: "ready", clientId, kind: "webview" })
 })()

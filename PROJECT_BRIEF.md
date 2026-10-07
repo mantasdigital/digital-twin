@@ -37,6 +37,7 @@ A production-ready Railway template providing browser-based VS Code (code-server
 | `ANTHROPIC_API_KEY` | No | - | Pre-configures the Voice Control extension (otherwise asked in the UI) |
 | `OPENAI_API_KEY` | No | - | Optional OpenAI speech-to-text for Voice Control |
 | `DEEPGRAM_API_KEY` | No | - | Optional Deepgram speech-to-text for Voice Control |
+| `DIGITAL_TWIN_BUNDLED_EXTENSIONS` | No | `on` | `off` ships without the Voice Control extension |
 
 ---
 

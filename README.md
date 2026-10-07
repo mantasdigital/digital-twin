@@ -45,11 +45,17 @@ activity bar). Talk to the IDE: *"open a terminal in src and run npm test"*,
 *"download this URL into downloads"*, *"show the ci folder"*, *"ask Claude to fix
 the failing test"*, or dictate text into a terminal or editor.
 
-On first use the panel asks for an **Anthropic API key** (turns speech into
-actions), offers to **log in to Claude Code** (so "ask Claude …" works), and lets
-you pick a **speech engine**: the browser's built-in recognition (free) or
-OpenAI / Deepgram for Wispr-Flow-grade accuracy. Keys stay on your server.
-`Ctrl+Shift+Space` toggles listening; destructive commands ask for confirmation.
+- **Push-to-talk** by default (tap or `Ctrl+Shift+Space`), or **wake word**
+  ("Hey Twin …") chosen during setup. A command ends on a long pause (6 s by
+  default), an optional end word such as "over", or another tap.
+- **Shows what it heard** and the planned actions; choose *ask every time*,
+  *countdown then run*, or *run immediately*. Destructive commands always ask.
+- **Phone and tablet**: open the Voice Remote on any device logged in to the IDE.
+- First use runs a wizard: Anthropic API key → listening mode → Claude Code
+  login → speech engine (browser built-in, OpenAI or Deepgram for Wispr-Flow-grade
+  accuracy). Keys stay on your server. `digitalTwinVoice.enabled: false` or
+  `DIGITAL_TWIN_BUNDLED_EXTENSIONS=off` turns it off. Details and a rollout
+  checklist: `extensions/voice-control/README.md`.
 
 ## Configuration
 
@@ -70,6 +76,7 @@ OpenAI / Deepgram for Wispr-Flow-grade accuracy. Keys stay on your server.
 | `ANTHROPIC_API_KEY`  | –                              | Pre-configures Voice Control (else asked in the UI) |
 | `OPENAI_API_KEY`     | –                              | Optional: OpenAI speech-to-text for Voice Control    |
 | `DEEPGRAM_API_KEY`   | –                              | Optional: Deepgram speech-to-text for Voice Control  |
+| `DIGITAL_TWIN_BUNDLED_EXTENSIONS` | `on`              | `off` ships the server without the Voice Control extension |
 
 ### Volume Configuration
 
