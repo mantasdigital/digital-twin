@@ -16,9 +16,25 @@ echo ""
 # ============================================================================
 
 # Auto-detect the home volume when $DIGITAL_TWIN_HOME is not set explicitly.
-# Volumes from older deployments may be mounted at /home/clauder (the legacy
-# name) or any other /home/<name>; those keep working as-is. Only when no
-# existing volume is found do we fall back to creating /home/digital-twin.
+# 1. Railway tells us where the volume is mounted (RAILWAY_VOLUME_MOUNT_PATH).
+# 2. Volumes from older deployments may be mounted at /home/clauder (the legacy
+#    name) or any other /home/<name>; those keep working as-is.
+# 3. Only when no volume is found do we fall back to /home/digital-twin, which
+#    lives in the image layer and is wiped on every redeploy.
+if [ -z "${DIGITAL_TWIN_HOME:-}" ] && [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ] && [ -d "$RAILWAY_VOLUME_MOUNT_PATH" ]; then
+    case "$RAILWAY_VOLUME_MOUNT_PATH" in
+        */workspace)
+            # Volume holds only the workspace: projects persist, but the home
+            # directory (extensions, settings, Claude login) does not.
+            DIGITAL_TWIN_HOME="$(dirname "$RAILWAY_VOLUME_MOUNT_PATH")"
+            echo "⚠ Volume is mounted at $RAILWAY_VOLUME_MOUNT_PATH (workspace only)."
+            echo "  Mount it at $DIGITAL_TWIN_HOME instead so extensions, settings and Claude login persist too."
+            ;;
+        *)
+            DIGITAL_TWIN_HOME="$RAILWAY_VOLUME_MOUNT_PATH"
+            ;;
+    esac
+fi
 if [ -z "${DIGITAL_TWIN_HOME:-}" ]; then
     if [ -d /home/digital-twin/workspace ] && [ -n "$(ls -A /home/digital-twin/workspace 2>/dev/null)" ]; then
         # An initialized digital-twin volume (the baked image dir is empty).
@@ -40,11 +56,46 @@ fi
 DIGITAL_TWIN_HOME="${DIGITAL_TWIN_HOME:-/home/digital-twin}"
 export DIGITAL_TWIN_HOME
 echo "→ Home volume: $DIGITAL_TWIN_HOME"
+
+# ============================================================================
+# VOLUME SANITY CHECK
+# Everything under $DIGITAL_TWIN_HOME must live on the persistent volume. The
+# container's root filesystem is an overlay that is thrown away on redeploy,
+# so compare device ids: the same device as "/" means there is no volume.
+# ============================================================================
+
+root_dev="$(stat -c %d / 2>/dev/null || echo 0)"
+home_dev="$(stat -c %d "$DIGITAL_TWIN_HOME" 2>/dev/null || echo "$root_dev")"
+ws_dev="$(stat -c %d "$DIGITAL_TWIN_HOME/workspace" 2>/dev/null || echo "$home_dev")"
+NO_VOLUME=0
+if [ "$home_dev" != "$root_dev" ]; then
+    echo "→ Persistent volume: OK"
+elif [ "$ws_dev" != "$root_dev" ]; then
+    echo "⚠ Only $DIGITAL_TWIN_HOME/workspace is persistent; the rest of the home directory is not."
+else
+    if [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ] && [ "${DIGITAL_TWIN_ALLOW_NO_VOLUME:-}" != "1" ]; then
+        echo "✖ A Railway volume is configured at $RAILWAY_VOLUME_MOUNT_PATH but $DIGITAL_TWIN_HOME is NOT on it."
+        echo "  Refusing to start on ephemeral storage: files written now would be lost on the next deploy."
+        echo "  Fix: mount the volume at $DIGITAL_TWIN_HOME, or set DIGITAL_TWIN_HOME=$RAILWAY_VOLUME_MOUNT_PATH,"
+        echo "  or set DIGITAL_TWIN_ALLOW_NO_VOLUME=1 to override."
+        exit 1
+    fi
+    echo "⚠⚠⚠ NO PERSISTENT VOLUME at $DIGITAL_TWIN_HOME — ALL FILES WILL BE LOST ON REDEPLOY ⚠⚠⚠"
+    echo "    Attach a Railway volume with mount path $DIGITAL_TWIN_HOME."
+    NO_VOLUME=1
+fi
 DIGITAL_TWIN_UID="${DIGITAL_TWIN_UID:-1000}"
 DIGITAL_TWIN_GID="${DIGITAL_TWIN_GID:-1000}"
 
-# RUN_AS_USER: Defaults to "digital-twin" for non-root. Set to "root" if needed.
+# RUN_AS_USER: "root" keeps everything as root. Any other value (default
+# "digital-twin"; the legacy "clauder" is accepted too) runs code-server and
+# every terminal as the unprivileged UID $DIGITAL_TWIN_UID with passwordless
+# sudo. Previously an unrecognised value silently stayed root.
 RUN_AS_USER="${RUN_AS_USER:-digital-twin}"
+if [ "$RUN_AS_USER" != "root" ] && [ "$RUN_AS_USER" != "digital-twin" ]; then
+    echo "→ RUN_AS_USER=$RUN_AS_USER is treated as the non-root user digital-twin"
+    RUN_AS_USER="digital-twin"
+fi
 
 export HOME="$DIGITAL_TWIN_HOME"
 export XDG_DATA_HOME="$DIGITAL_TWIN_HOME/.local/share"
@@ -127,10 +178,36 @@ PROFILE
     # USER SWITCHING (if RUN_AS_USER=digital-twin)
     # ========================================================================
 
+    # ========================================================================
+    # HOME MUST MATCH THE VOLUME
+    # gosu, su, sudo -i and login shells take HOME from /etc/passwd. If that
+    # still says /home/digital-twin while the volume is mounted elsewhere
+    # (e.g. a legacy /home/clauder mount), everything those shells write —
+    # Claude Code login and history, SSH keys, git credentials, dotfiles —
+    # silently lands on the ephemeral image layer and vanishes on redeploy.
+    # ========================================================================
+
+    user_name="$(getent passwd "$DIGITAL_TWIN_UID" | cut -d: -f1)"
+    passwd_home="$(getent passwd "$DIGITAL_TWIN_UID" | cut -d: -f6)"
+    if [ -n "$user_name" ] && [ "$passwd_home" != "$DIGITAL_TWIN_HOME" ]; then
+        if usermod -d "$DIGITAL_TWIN_HOME" "$user_name" 2>/dev/null \
+            || sed -i "s#^\($user_name:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*:#\1$DIGITAL_TWIN_HOME:#" /etc/passwd; then
+            echo "→ Home of user $user_name set to $DIGITAL_TWIN_HOME (was $passwd_home)"
+        else
+            echo "  ⚠ Could not update the home of $user_name in /etc/passwd"
+        fi
+    fi
+
     if [ "$RUN_AS_USER" = "digital-twin" ]; then
-        echo "→ Fixing permissions for digital-twin user (UID: $DIGITAL_TWIN_UID)..."
-        chown -R "$DIGITAL_TWIN_UID:$DIGITAL_TWIN_GID" "$DIGITAL_TWIN_HOME" 2>/dev/null || true
-        echo "  ✓ Permissions fixed"
+        echo "→ Fixing ownership for UID $DIGITAL_TWIN_UID..."
+        # Top level synchronously (cheap), then a deep pass in the background:
+        # a volume with a million files would otherwise hold up startup past
+        # the health-check window. Files created while running as root in an
+        # earlier deployment become writable again once the pass finishes.
+        chown "$DIGITAL_TWIN_UID:$DIGITAL_TWIN_GID" "$DIGITAL_TWIN_HOME" "$DIGITAL_TWIN_HOME"/.??* "$DIGITAL_TWIN_HOME"/* 2>/dev/null || true
+        ( chown -R "$DIGITAL_TWIN_UID:$DIGITAL_TWIN_GID" "$DIGITAL_TWIN_HOME" 2>/dev/null || true
+          echo "  ✓ Deep ownership pass complete" ) &
+        echo "  ✓ Ownership fixed (deep pass continues in background)"
 
         # Check if gosu is available
         if command -v gosu &>/dev/null; then
@@ -205,8 +282,9 @@ You'll need to authenticate with your Anthropic API key on first use.
 
 Set these environment variables in Railway:
 
-- `RUN_AS_USER=digital-twin` - Run as non-root user (recommended for Claude)
+- `RUN_AS_USER=digital-twin` - Run as non-root user (default, recommended for Claude)
 - `RUN_AS_USER=root` - Stay as root
+- Attach a Railway volume at `/home/digital-twin` or your files are lost on redeploy
 
 Happy coding! 🚀
 WELCOME
@@ -214,6 +292,25 @@ WELCOME
 
     touch "$FIRST_RUN_MARKER" 2>/dev/null || true
     echo "  ✓ Initialization complete"
+fi
+
+# A visible warning inside the workspace when nothing persists; removed again
+# as soon as a volume is attached.
+NO_VOLUME_FILE="$HOME/workspace/NO-VOLUME-WARNING.md"
+if [ "$NO_VOLUME" = "1" ]; then
+    cat > "$NO_VOLUME_FILE" << 'WARN'
+# ⚠ No persistent volume attached
+
+This Digital Twin is running on ephemeral storage. **Everything in this
+workspace, your extensions, settings and Claude Code login will be deleted on
+the next deploy or restart.**
+
+Fix it in Railway: open the service → **Volumes** → attach a volume with mount
+path `/home/digital-twin` (5 GB or more), then redeploy. This file disappears
+once a volume is detected.
+WARN
+elif [ -f "$NO_VOLUME_FILE" ]; then
+    rm -f "$NO_VOLUME_FILE" 2>/dev/null || true
 fi
 
 # ============================================================================
@@ -295,6 +392,37 @@ if [ -d "$HOME/entrypoint.d" ]; then
             echo ""
             echo "Running: $(basename "$script")"
             "$script" || echo "  ⚠ Script exited with code $?"
+        fi
+    done
+fi
+
+# ============================================================================
+# BUNDLED EXTENSIONS
+# The image ships private extensions (Voice Control) as VSIX files. Install
+# each one into the volume's extensions dir once per version so every deploy
+# gets them without touching a marketplace. A marker per version keeps boots
+# fast; users can still uninstall until the next version bump.
+# ============================================================================
+
+BUNDLED_EXT_DIR="/opt/digital-twin/extensions"
+if [ -d "$BUNDLED_EXT_DIR" ]; then
+    MARKER_DIR="$XDG_DATA_HOME/code-server/bundled-extensions"
+    mkdir -p "$MARKER_DIR" 2>/dev/null || true
+    for vsix in "$BUNDLED_EXT_DIR"/*.vsix; do
+        [ -f "$vsix" ] || continue
+        base="$(basename "$vsix" .vsix)"      # e.g. digital-twin-voice-0.1.0
+        ext_id="${base%-*}"                    # e.g. digital-twin-voice
+        if [ -f "$MARKER_DIR/$base" ]; then
+            continue
+        fi
+        echo "→ Installing bundled extension: $base"
+        if install_output="$(code-server --install-extension "$vsix" --force 2>&1)"; then
+            echo "$install_output" | grep -v i18next | sed 's/^/    /'
+            rm -f "$MARKER_DIR/$ext_id"-* 2>/dev/null || true
+            touch "$MARKER_DIR/$base" 2>/dev/null || true
+        else
+            echo "$install_output" | grep -v i18next | sed 's/^/    /'
+            echo "  ⚠ Failed to install $base (will retry next boot)"
         fi
     done
 fi

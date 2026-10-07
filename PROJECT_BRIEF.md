@@ -19,6 +19,7 @@ A production-ready Railway template providing browser-based VS Code (code-server
 - Persistent storage for extensions, settings, and projects
 - Non-root security with optional sudo access
 - One-click Railway deployment
+- Voice Control: private bundled VS Code extension (speech → Claude tool use → terminals/explorer/Claude Code)
 
 ---
 
@@ -33,6 +34,9 @@ A production-ready Railway template providing browser-based VS Code (code-server
 | `DIGITAL_TWIN_GID` | No | `1000` | Group ID for digital-twin |
 | `APP_NAME` | No | `Digital Twin` | Login page branding |
 | `WELCOME_TEXT` | No | `Welcome to Digital Twin` | Login page message |
+| `ANTHROPIC_API_KEY` | No | - | Pre-configures the Voice Control extension (otherwise asked in the UI) |
+| `OPENAI_API_KEY` | No | - | Optional OpenAI speech-to-text for Voice Control |
+| `DEEPGRAM_API_KEY` | No | - | Optional Deepgram speech-to-text for Voice Control |
 
 ---
 
@@ -46,6 +50,13 @@ $HOME/.claude/local       <- Claude Code from volume
 /usr/local/bin            <- Image fallback (Claude)
 /usr/bin                  <- Image fallback (Node.js)
 ```
+
+### Boot-time guarantees (railway-entrypoint.sh)
+- Volume located via `RAILWAY_VOLUME_MOUNT_PATH` → `DIGITAL_TWIN_HOME` → legacy `/home/<name>` scan
+- `/etc/passwd` home of UID 1000 is rewritten to `$DIGITAL_TWIN_HOME` so every shell (gosu/su/sudo/login) writes to the volume
+- Any `RUN_AS_USER` other than `root` runs as the non-root user (legacy `clauder` included)
+- Device-id check: refuses to boot on ephemeral storage when a volume is configured but not mounted at the home; warns + writes `workspace/NO-VOLUME-WARNING.md` when no volume exists
+- Ownership fix: top level synchronously, deep `chown -R` in the background (large volumes must not block the health check)
 
 ### What Persists (on volume)
 - Extensions: `~/.local/share/code-server/extensions/`
@@ -65,3 +76,4 @@ $HOME/.claude/local       <- Claude Code from volume
 | `railway-entrypoint.sh` | Container startup script |
 | `railway.toml` | Railway deployment config |
 | `README.md` | User documentation |
+| `extensions/voice-control/` | Voice Control extension source (built into a VSIX by the Dockerfile, installed on boot by the entrypoint) |
