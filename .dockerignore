@@ -12,3 +12,9 @@
 !tsconfig.json
 !src/**
 !typings/**
+
+# Voice Control extension (built into a VSIX by the voice-builder stage)
+!extensions/voice-control/**
+extensions/voice-control/node_modules
+extensions/voice-control/dist
+extensions/voice-control/*.vsix

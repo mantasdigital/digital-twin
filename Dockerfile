@@ -35,6 +35,20 @@ RUN mkdir /qr-stage && cd /qr-stage && npm init -y >/dev/null \
          [ "$name" = "qrcode" ] || [ "$name" = ".package-lock.json" ] || cp -r "$dep" "/qr-layout/qrcode/node_modules/$name"; \
        done
 
+# ============================================================================
+# VOICE CONTROL EXTENSION BUILDER
+# Bundles extensions/voice-control into a private VSIX. It is never published
+# to a marketplace; the entrypoint installs it from /opt/digital-twin on boot.
+# ============================================================================
+
+FROM node:22-bookworm-slim AS voice-builder
+
+WORKDIR /ext
+COPY extensions/voice-control/package.json extensions/voice-control/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY extensions/voice-control/ ./
+RUN npm run package
+
 FROM codercom/code-server:4.113.0
 
 USER root
@@ -133,6 +147,30 @@ RUN chmod +x /usr/bin/railway-entrypoint.sh
 COPY --from=builder /build/out /usr/lib/code-server/out
 COPY src/browser /usr/lib/code-server/src/browser
 COPY --from=builder /qr-layout/qrcode /usr/lib/code-server/node_modules/qrcode
+
+# ============================================================================
+# BUNDLED EXTENSIONS + MICROPHONE ACCESS FOR WEBVIEWS
+# Stock VS Code never grants `microphone` to webview iframes, so the Voice
+# Control side panel could not hear anything. Add it to the allow-list of both
+# the webview host iframe (workbench bundle) and the inner content iframe
+# (pre/index.html). The patterns are exact array literals; if a future
+# code-server bump changes them the build warns instead of failing, and the
+# extension's "open in a browser tab" fallback still works.
+# ============================================================================
+
+COPY --from=voice-builder /ext/digital-twin-voice-*.vsix /opt/digital-twin/extensions/
+
+RUN set -e; \
+    PRE=/usr/lib/code-server/lib/vscode/out/vs/workbench/contrib/webview/browser/pre/index.html; \
+    WB=/usr/lib/code-server/lib/vscode/out/vs/workbench/workbench.web.main.internal.js; \
+    if grep -q "\['cross-origin-isolated;', 'autoplay;', 'local-network-access;'\]" "$PRE"; then \
+        sed -i "s/\['cross-origin-isolated;', 'autoplay;', 'local-network-access;'\]/['cross-origin-isolated;', 'autoplay;', 'local-network-access;', 'microphone;']/" "$PRE" \
+        && echo "Webview content iframe: microphone allowed"; \
+    else echo "WARNING: webview pre/index.html allow-list pattern not found; microphone in side panel may not work"; fi; \
+    if grep -q '\["cross-origin-isolated","autoplay","local-network-access"\]' "$WB"; then \
+        sed -i 's/\["cross-origin-isolated","autoplay","local-network-access"\]/["cross-origin-isolated","autoplay","local-network-access","microphone"]/' "$WB" \
+        && echo "Webview host iframe: microphone allowed"; \
+    else echo "WARNING: workbench webview allow-list pattern not found; microphone in side panel may not work"; fi
 
 # ============================================================================
 # CLAUDE CODE CLI INSTALLATION

@@ -1,0 +1,166 @@
+{
+  "name": "digital-twin-voice",
+  "displayName": "Digital Twin Voice Control",
+  "description": "Talk to your Digital Twin: open terminals, run commands, open folders, download files and hand tasks to Claude Code by voice.",
+  "version": "0.1.0",
+  "publisher": "digital-twin",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "digitalTwinVoice",
+          "title": "Voice",
+          "icon": "media/mic.svg"
+        }
+      ]
+    },
+    "views": {
+      "digitalTwinVoice": [
+        {
+          "type": "webview",
+          "id": "digitalTwinVoice.panel",
+          "name": "Voice Control",
+          "icon": "media/mic.svg",
+          "contextualTitle": "Voice Control"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "digitalTwinVoice.toggleRecording",
+        "title": "Voice: Start/Stop Listening",
+        "icon": "$(mic)"
+      },
+      {
+        "command": "digitalTwinVoice.openPanel",
+        "title": "Voice: Open Voice Control Panel"
+      },
+      {
+        "command": "digitalTwinVoice.openInBrowser",
+        "title": "Voice: Open Voice Remote in a Browser Tab"
+      },
+      {
+        "command": "digitalTwinVoice.typeCommand",
+        "title": "Voice: Type a Command Instead of Speaking"
+      },
+      {
+        "command": "digitalTwinVoice.setAnthropicKey",
+        "title": "Voice: Set Anthropic API Key"
+      },
+      {
+        "command": "digitalTwinVoice.setSpeechKey",
+        "title": "Voice: Set Speech-to-Text API Key"
+      },
+      {
+        "command": "digitalTwinVoice.claudeLogin",
+        "title": "Voice: Log in to Claude Code"
+      },
+      {
+        "command": "digitalTwinVoice.clearKeys",
+        "title": "Voice: Forget Stored API Keys"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "digitalTwinVoice.toggleRecording",
+        "key": "ctrl+shift+space",
+        "mac": "cmd+shift+space"
+      }
+    ],
+    "configuration": {
+      "title": "Digital Twin Voice Control",
+      "properties": {
+        "digitalTwinVoice.model": {
+          "type": "string",
+          "default": "claude-opus-5-5",
+          "enum": [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5"
+          ],
+          "enumDescriptions": [
+            "Best understanding of vague or multi-step requests (default).",
+            "Faster and cheaper, still strong.",
+            "Fastest and cheapest; fine for simple commands."
+          ],
+          "description": "Claude model that turns what you say into actions."
+        },
+        "digitalTwinVoice.speech.provider": {
+          "type": "string",
+          "default": "browser",
+          "enum": [
+            "browser",
+            "openai",
+            "deepgram"
+          ],
+          "enumDescriptions": [
+            "Browser built-in speech recognition. Free, no key, works in Chrome/Edge/Safari. Weakest on technical words.",
+            "OpenAI transcription (gpt-4o-transcribe / whisper). High accuracy. Needs an OpenAI API key.",
+            "Deepgram Nova. High accuracy, supports vocabulary hints. Needs a Deepgram API key."
+          ],
+          "description": "Which speech-to-text engine turns your voice into text."
+        },
+        "digitalTwinVoice.speech.language": {
+          "type": "string",
+          "default": "",
+          "description": "Language code for speech recognition (e.g. en, en-US, lt, de). Leave empty for auto/browser default."
+        },
+        "digitalTwinVoice.speech.openaiModel": {
+          "type": "string",
+          "default": "gpt-4o-transcribe",
+          "description": "OpenAI transcription model (gpt-4o-transcribe, gpt-4o-mini-transcribe or whisper-1)."
+        },
+        "digitalTwinVoice.speech.deepgramModel": {
+          "type": "string",
+          "default": "nova-3",
+          "description": "Deepgram model."
+        },
+        "digitalTwinVoice.confirmDangerous": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before running destructive commands (rm -rf, sudo, git push --force, closing windows, ...)."
+        },
+        "digitalTwinVoice.speakReplies": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read short confirmations aloud using the browser's speech synthesis."
+        },
+        "digitalTwinVoice.remotePort": {
+          "type": "number",
+          "default": 39339,
+          "description": "Local port for the Voice Remote page (opened in a separate browser tab or on your phone through code-server's proxy)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "npm run check && npm run build && vsce package --no-dependencies --allow-missing-repository -o digital-twin-voice-$npm_package_version.vsix"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "@types/vscode": "^1.90.0",
+    "@types/ws": "^8.5.12",
+    "@vscode/vsce": "^3.3.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
