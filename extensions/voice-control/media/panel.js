@@ -514,6 +514,19 @@
       if (err !== "no-speech") post({ type: "log", text: `recognizer error: ${err} ${e.message || ""}` })
       if (err === "aborted") {
         const now = Date.now()
+        // Aborted within a second of starting, without ever hearing anything:
+        // the browser's speech backend is not there (Comet, Brave, ...).
+        if (!hf.gotResult && now - (hf.lastStart || 0) < 1500) {
+          hf.earlyAborts = (hf.earlyAborts || 0) + 1
+          if (hf.earlyAborts >= 3) {
+            hf.earlyAborts = 0
+            showError(
+              "This browser has no working built-in speech service (Perplexity Comet, Brave and similar strip it). Use Chrome or Edge, or switch the Speech engine to OpenAI or Deepgram in ⚙ Settings, which records audio instead and works in any browser.",
+            )
+            recognizerFatal(true)
+            return
+          }
+        }
         hf.aborts = (hf.aborts || []).filter((t) => now - t < 10000)
         hf.aborts.push(now)
         if (hf.aborts.length >= 4) {
@@ -553,9 +566,9 @@
         if (hf.netErrors >= 2) {
           hf.netErrors = 0
           showError(
-            "This browser's built-in speech service is unreachable (common in privacy browsers such as Brave or Comet). Use Chrome or Edge, or switch the speech engine to OpenAI or Deepgram in Settings.",
+            "This browser has no working built-in speech service (Perplexity Comet, Brave and similar strip it). Use Chrome or Edge, or switch the Speech engine to OpenAI or Deepgram in ⚙ Settings, which records audio instead and works in any browser.",
           )
-          recognizerFatal()
+          recognizerFatal(true)
           return
         }
       }
@@ -575,6 +588,8 @@
     }
     try {
       rec.start()
+      hf.lastStart = Date.now()
+      hf.gotResult = false
       hf.backoff = Math.max(300, Math.min(hf.backoff, 2000))
     } catch (err) {
       hf.rec = null
@@ -595,22 +610,28 @@
     }, 50)
   }
   function startWakeIfNeeded() {
+    if (hf.recognizerBroken) return // browser speech service unusable; user can retry via the ear button
     if (Date.now() < (hf.cooldownUntil || 0)) return // a fatal error just happened; don't thrash
     if ((hf.armed || cap.phase === "capture" || cap.cancelWin) && !hf.rec) startRecognizer()
     else if (!hf.armed && cap.phase !== "capture" && !cap.cancelWin && hf.rec) stopRecognizer()
   }
 
   /** Stop everything that could restart the recognizer and back off for a while. */
-  function recognizerFatal() {
+  function recognizerFatal(permanent) {
     hf.rec = null
     hf.cooldownUntil = Date.now() + 15000
+    if (permanent) hf.recognizerBroken = true // until the user taps the ear again
     cap.cancelWin = false
     disarm()
-    if (cap.phase === "capture") abortCapture()
+    // In record mode the recognizer is only a helper (end word / timing); the
+    // audio capture and its energy-based pause detection carry on without it.
+    if (cap.phase === "capture" && state.sttMode !== "record") abortCapture()
   }
 
   function onRecResult(e) {
     hf.netErrors = 0
+    hf.earlyAborts = 0
+    hf.gotResult = true
     if (ttsSpeaking || Date.now() - lastTtsEnd < 800) return // never react to our own voice
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i]
@@ -676,7 +697,13 @@
     cap.maxTimer = setTimeout(() => finishCapture("max"), state.listening.maxCommandSeconds * 1000)
     resetSilence()
     if (state.sttMode === "record") startRecorder()
-    else if (!SR) {
+    else if (hf.recognizerBroken) {
+      showError(
+        "This browser has no working built-in speech service (Perplexity Comet, Brave and similar strip it). Use Chrome or Edge, or switch the Speech engine to OpenAI or Deepgram in ⚙ Settings, which records audio instead and works in any browser.",
+      )
+      abortCapture()
+      return
+    } else if (!SR) {
       showError("This browser has no speech recognition. Switch the speech engine to OpenAI or Deepgram in Settings.")
       abortCapture()
       return
@@ -746,6 +773,8 @@
   // ------------------------------------------------------------ hands-free arm/disarm
   function arm() {
     hf.cooldownUntil = 0
+    hf.recognizerBroken = false
+    hf.earlyAborts = 0
     probeOnDevice()
     if (!SR) {
       showError("Hands-free needs browser speech recognition (Chrome, Edge or Safari).")
