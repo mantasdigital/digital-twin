@@ -166,7 +166,8 @@ RUN python3 /opt/digital-twin/patch-webview-microphone.py /usr/lib/code-server |
 
 # ============================================================================
 # BUILT-IN SPEECH-TO-TEXT (server engine for Voice Control)
-# faster-whisper on CPU (int8). Works in every browser, needs no API key, and
+# faster-whisper on CPU (int8) in its own virtualenv (pip must not touch the
+# Debian-owned system packages). Works in every browser, needs no API key, and
 # audio never leaves the server. The model is baked into the image so first
 # use is instant and offline. ARG DIGITAL_TWIN_STT=off skips all of this.
 # ============================================================================
@@ -177,10 +178,11 @@ ENV DIGITAL_TWIN_STT_MODEL=${DIGITAL_TWIN_STT_MODEL}
 ENV HF_HOME=/opt/digital-twin/models
 COPY stt/whisper_worker.py /opt/digital-twin/stt/whisper_worker.py
 RUN if [ "$DIGITAL_TWIN_STT" = "on" ]; then \
-        pip3 install --break-system-packages --no-cache-dir "faster-whisper>=1.1" "av<16" \
+        python3 -m venv /opt/digital-twin/stt/venv \
+        && /opt/digital-twin/stt/venv/bin/pip install --no-cache-dir "faster-whisper>=1.1" "av<16" \
         && mkdir -p /opt/digital-twin/models \
-        && python3 -c "from faster_whisper import WhisperModel; WhisperModel('${DIGITAL_TWIN_STT_MODEL}', device='cpu', compute_type='int8')" \
-        && chmod -R a+rX /opt/digital-twin/models \
+        && /opt/digital-twin/stt/venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('${DIGITAL_TWIN_STT_MODEL}', device='cpu', compute_type='int8')" \
+        && chmod -R a+rX /opt/digital-twin/models /opt/digital-twin/stt \
         && echo "Built-in speech-to-text ready (faster-whisper, model ${DIGITAL_TWIN_STT_MODEL})"; \
     else echo "Built-in speech-to-text skipped (DIGITAL_TWIN_STT=off)"; fi
 

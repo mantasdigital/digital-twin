@@ -11,5 +11,8 @@ is sent to the server and never leaves it.
   under `/opt/digital-twin/models`; a different model downloads on first use
   into the same cache (needs network).
 - Threads: `DIGITAL_TWIN_STT_THREADS` (default: up to 4).
+- Interpreter: the image's `/opt/digital-twin/stt/venv/bin/python`; override with
+  `DIGITAL_TWIN_STT_PYTHON` (a repo checkout can point it at any venv that has
+  faster-whisper installed).
 - Disable: set `DIGITAL_TWIN_STT=off` to skip installing it; the extension then
   falls back to the browser engine.

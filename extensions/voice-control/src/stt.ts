@@ -57,6 +57,12 @@ export class ServerStt {
     private readonly log: (line: string) => void,
   ) {}
 
+  /** Interpreter with faster-whisper: the image's venv, an override, or plain python3. */
+  static pythonBinary(): string {
+    const candidates = [process.env.DIGITAL_TWIN_STT_PYTHON || "", "/opt/digital-twin/stt/venv/bin/python"]
+    return candidates.find((p) => p && fs.existsSync(p)) || "python3"
+  }
+
   static findWorker(extensionPath: string): string | undefined {
     const candidates = [
       process.env.DIGITAL_TWIN_STT_WORKER || "",
@@ -75,7 +81,7 @@ export class ServerStt {
     }
     return new Promise((resolve) => {
       execFile(
-        "python3",
+        ServerStt.pythonBinary(),
         ["-c", "import faster_whisper, av, ctranslate2"],
         { timeout: 30_000 },
         (err, _out, stderr) => {
@@ -94,7 +100,10 @@ export class ServerStt {
 
   private ensure(): Promise<void> {
     if (this.proc && this.ready) return this.ready
-    const proc = spawn("python3", [this.workerPath!], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] })
+    const proc = spawn(ServerStt.pythonBinary(), [this.workerPath!], {
+      env: { ...process.env },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
     this.proc = proc
     this.buffer = ""
     this.ready = new Promise<void>((resolve, reject) => {
