@@ -185,7 +185,6 @@
     if (!wake && hf.armed) disarm()
     if (wake && first && state.listening.autoStart && mode === "webview" && !state.handsFreeOwner && setup.brainReady)
       arm()
-    probeOnDevice()
     if (hf.armed) startWakeIfNeeded()
 
     $("hint").textContent = wake
@@ -519,28 +518,22 @@
         hf.aborts.push(now)
         if (hf.aborts.length >= 4) {
           hf.aborts = []
-          hf.rec = null
           showError(
             "Speech recognition keeps being interrupted. Close other tabs or apps that use the microphone (including a second Voice panel), then tap the ear again.",
           )
-          disarm()
-          if (cap.phase === "capture") abortCapture()
+          recognizerFatal()
           return
         }
         hf.backoff = Math.max(hf.backoff, 800)
       }
       if (err === "not-allowed" || err === "service-not-allowed") {
-        hf.rec = null
         micFailure({ name: "NotAllowedError", message: e.message || err })
-        disarm()
-        if (cap.phase === "capture") abortCapture()
+        recognizerFatal()
         return
       }
       if (err === "audio-capture") {
-        hf.rec = null
         micFailure({ name: "NotFoundError", message: "no microphone input" })
-        disarm()
-        if (cap.phase === "capture") abortCapture()
+        recognizerFatal()
         return
       }
       if (err === "language-not-supported") {
@@ -559,12 +552,10 @@
         hf.backoff = Math.min(8000, hf.backoff * 2)
         if (hf.netErrors >= 2) {
           hf.netErrors = 0
-          hf.rec = null
           showError(
             "This browser's built-in speech service is unreachable (common in privacy browsers such as Brave or Comet). Use Chrome or Edge, or switch the speech engine to OpenAI or Deepgram in Settings.",
           )
-          disarm()
-          if (cap.phase === "capture") abortCapture()
+          recognizerFatal()
           return
         }
       }
@@ -604,8 +595,18 @@
     }, 50)
   }
   function startWakeIfNeeded() {
+    if (Date.now() < (hf.cooldownUntil || 0)) return // a fatal error just happened; don't thrash
     if ((hf.armed || cap.phase === "capture" || cap.cancelWin) && !hf.rec) startRecognizer()
     else if (!hf.armed && cap.phase !== "capture" && !cap.cancelWin && hf.rec) stopRecognizer()
+  }
+
+  /** Stop everything that could restart the recognizer and back off for a while. */
+  function recognizerFatal() {
+    hf.rec = null
+    hf.cooldownUntil = Date.now() + 15000
+    cap.cancelWin = false
+    disarm()
+    if (cap.phase === "capture") abortCapture()
   }
 
   function onRecResult(e) {
@@ -658,6 +659,7 @@
   // ------------------------------------------------------------ capture (one command)
   function startCapture(source, prefill, interim) {
     if (cap.phase === "capture") return
+    if (source === "tap") hf.cooldownUntil = 0
     unlockAudio()
     $("micError").classList.add("hidden")
     cap.phase = "capture"
@@ -743,6 +745,7 @@
 
   // ------------------------------------------------------------ hands-free arm/disarm
   function arm() {
+    hf.cooldownUntil = 0
     probeOnDevice()
     if (!SR) {
       showError("Hands-free needs browser speech recognition (Chrome, Edge or Safari).")
