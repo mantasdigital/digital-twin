@@ -2,7 +2,7 @@
   "name": "digital-twin-voice",
   "displayName": "Digital Twin Voice Control",
   "description": "Talk to your Digital Twin: open terminals, run commands, open folders, download files and hand tasks to Claude Code by voice.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "digital-twin",
   "license": "MIT",
   "private": true,

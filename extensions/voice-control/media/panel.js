@@ -185,6 +185,7 @@
     if (!wake && hf.armed) disarm()
     if (wake && first && state.listening.autoStart && mode === "webview" && !state.handsFreeOwner && setup.brainReady)
       arm()
+    probeOnDevice()
     if (hf.armed) startWakeIfNeeded()
 
     $("hint").textContent = wake
@@ -473,36 +474,61 @@
     cancelWin: false,
   }
 
-  async function configureOnDevice(rec) {
-    if (!state.listening.preferOnDevice || !SR.available) return
-    try {
-      const langs = [state.language || navigator.language || "en-US"]
-      const status = await SR.available({ langs, processLocally: true })
-      if (status === "available") {
-        rec.processLocally = true
-        hf.onDevice = true
-      } else if (status === "downloadable" && !configureOnDevice.installing) {
-        configureOnDevice.installing = true
-        SR.install({ langs, processLocally: true }).catch(() => {})
-      }
-    } catch (e) {
-      /* fall back to default recognition */
-    }
+  // Decide ONCE whether on-device recognition is available (Chrome 139+); the
+  // result is cached so starting a recognizer never has to await anything.
+  // An await inside startRecognizer let a second instance be created while
+  // the first was still being configured; Chrome then aborts the other one,
+  // and the two kept aborting each other forever ("recognizer error: aborted").
+  let onDeviceDecision = null // null = unknown, true/false once probed
+  function probeOnDevice() {
+    if (onDeviceDecision !== null || !SR || !SR.available || !state.listening.preferOnDevice) return
+    onDeviceDecision = false
+    const langs = [state.language || navigator.language || "en-US"]
+    SR.available({ langs, processLocally: true })
+      .then((status) => {
+        if (status === "available") onDeviceDecision = true
+        else if (status === "downloadable" && SR.install) SR.install({ langs, processLocally: true }).catch(() => {})
+      })
+      .catch(() => {})
   }
 
   /** One continuous recognizer serves wake detection, command text and cancel words. */
-  async function startRecognizer() {
+  function startRecognizer() {
     if (!SR || hf.rec) return
     const rec = new SR()
+    hf.rec = rec // reserve the slot synchronously: only one recognizer may ever exist
     rec.continuous = true
     rec.interimResults = true
     rec.maxAlternatives = 1
     if (state.language) rec.lang = state.language
-    if (hf.armed) await configureOnDevice(rec)
+    if (hf.armed && onDeviceDecision === true) {
+      try {
+        rec.processLocally = true
+      } catch (e) {
+        /* ignore */
+      }
+    }
     rec.onresult = onRecResult
     rec.onerror = (e) => {
+      if (hf.rec !== rec) return // stale instance
       const err = e.error
-      post({ type: "log", text: `recognizer error: ${err} ${e.message || ""}` })
+      if (err !== "no-speech") post({ type: "log", text: `recognizer error: ${err} ${e.message || ""}` })
+      if (err === "aborted") {
+        const now = Date.now()
+        hf.aborts = (hf.aborts || []).filter((t) => now - t < 10000)
+        hf.aborts.push(now)
+        if (hf.aborts.length >= 4) {
+          hf.aborts = []
+          hf.rec = null
+          showError(
+            "Speech recognition keeps being interrupted. Close other tabs or apps that use the microphone (including a second Voice panel), then tap the ear again.",
+          )
+          disarm()
+          if (cap.phase === "capture") abortCapture()
+          return
+        }
+        hf.backoff = Math.max(hf.backoff, 800)
+      }
       if (err === "not-allowed" || err === "service-not-allowed") {
         hf.rec = null
         micFailure({ name: "NotAllowedError", message: e.message || err })
@@ -545,6 +571,7 @@
       // no-speech / aborted: onend follows and restarts if needed
     }
     rec.onend = () => {
+      if (hf.rec !== rec) return // stale instance
       hf.rec = null
       if (hf.stopping) return
       if (hf.armed || cap.phase === "capture" || cap.cancelWin) {
@@ -557,8 +584,7 @@
     }
     try {
       rec.start()
-      hf.rec = rec
-      hf.backoff = 300
+      hf.backoff = Math.max(300, Math.min(hf.backoff, 2000))
     } catch (err) {
       hf.rec = null
       if (!/already started/i.test(String(err && err.message))) micFailure(err)
@@ -717,6 +743,7 @@
 
   // ------------------------------------------------------------ hands-free arm/disarm
   function arm() {
+    probeOnDevice()
     if (!SR) {
       showError("Hands-free needs browser speech recognition (Chrome, Edge or Safari).")
       return
