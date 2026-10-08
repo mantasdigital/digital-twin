@@ -143,6 +143,7 @@ export interface InterpretOptions {
   model: string
   transcript: string
   context: string
+  signal?: AbortSignal
 }
 
 export async function interpret(opts: InterpretOptions): Promise<IntentResult> {
@@ -162,14 +163,13 @@ export async function interpret(opts: InterpretOptions): Promise<IntentResult> {
   try {
     // Server-side fallback: if a safety classifier declines, the API re-runs the
     // request on a fallback model inside the same call.
-    response = await client.beta.messages.create({
-      ...base,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-    })
+    response = await client.beta.messages.create(
+      { ...base, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" },
+      { signal: opts.signal },
+    )
   } catch (err) {
     if (err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message)) {
-      response = await client.beta.messages.create(base)
+      response = await client.beta.messages.create(base, { signal: opts.signal })
     } else {
       throw err
     }
@@ -249,6 +249,7 @@ export interface ClaudeCodeOptions {
   model: string
   transcript: string
   context: string
+  signal?: AbortSignal
 }
 
 export async function interpretViaClaudeCode(opts: ClaudeCodeOptions): Promise<IntentResult> {
@@ -287,6 +288,7 @@ export async function interpretViaClaudeCode(opts: ClaudeCodeOptions): Promise<I
         cwd: os.tmpdir(),
         timeout: 90_000,
         maxBuffer: 8 * 1024 * 1024,
+        signal: opts.signal,
         env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
       },
       (err, out, errOut) => {

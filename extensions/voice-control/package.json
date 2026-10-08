@@ -2,7 +2,7 @@
   "name": "digital-twin-voice",
   "displayName": "Digital Twin Voice Control",
   "description": "Talk to your Digital Twin: open terminals, run commands, open folders, download files and hand tasks to Claude Code by voice.",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "publisher": "digital-twin",
   "license": "MIT",
   "private": true,
@@ -80,6 +80,10 @@
       {
         "command": "digitalTwinVoice.clearKeys",
         "title": "Voice: Forget Stored API Keys"
+      },
+      {
+        "command": "digitalTwinVoice.stopEverything",
+        "title": "Voice: Stop Everything (listening, voice brains, speech engine, remote)"
       }
     ],
     "keybindings": [

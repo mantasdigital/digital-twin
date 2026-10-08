@@ -80,7 +80,11 @@ def main():
             language = (req.get("language") or "").split("-")[0].lower() or None
             # Vocabulary goes in as hotwords (bias), not as the prompt: with a
             # short prompt greedy decoding tended to stop after one word.
-            hotwords = " ".join((req.get("prompt") or "").replace(",", " ").split())[:300] or None
+            wake = (req.get("wake") or "").strip()
+            hotwords = " ".join(((wake + " " if wake else "") + (req.get("prompt") or "")).replace(",", " ").split())[:300] or None
+            # A natural example sentence with the wake phrase biases Whisper
+            # towards writing it the way the matcher expects.
+            initial_prompt = f"Developer dictation in VS Code. {wake}, open a terminal." if wake else "Developer dictation in VS Code."
             audio = decode(path)
             seconds = audio.shape[0] / 16000.0
             if seconds < 0.3:
@@ -89,7 +93,7 @@ def main():
             segments, info = model.transcribe(
                 audio,
                 language=language,
-                initial_prompt="Developer dictation in VS Code.",
+                initial_prompt=initial_prompt,
                 hotwords=hotwords,
                 beam_size=5,
                 best_of=5,

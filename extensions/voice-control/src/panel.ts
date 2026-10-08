@@ -256,6 +256,7 @@ ${remoteHead}
     <span class="dot" id="statusDot"></span>
     <span id="statusText">Starting…</span>
     <span class="spacer"></span>
+    <button class="small-btn danger hidden" id="btnCancelBusy" title="Cancel the command being processed">Cancel</button>
     <button class="icon" id="btnEar" title="Hands-free: listen for the wake phrase">👂</button>
     <button class="icon" id="btnSpeak" title="Read replies aloud">🔊</button>
     <button class="icon" id="btnSettingsToggle" title="Settings">⚙</button>
@@ -343,8 +344,17 @@ ${remoteHead}
   </section>
 
   <section class="card">
-    <div class="label">Terminals</div>
+    <div class="label">Terminals <span class="muted small">(✕ closes)</span></div>
     <ul id="terminals" class="terminals"><li class="muted">none</li></ul>
+  </section>
+
+  <section class="card" id="agentsCard">
+    <div class="label">Claude agents &amp; voice processes <a href="#" id="btnRefreshProcs" class="small">refresh</a></div>
+    <ul id="processes" class="procs"><li class="muted">loading…</li></ul>
+    <div class="row">
+      <button class="danger" id="btnStopAll" title="Stop listening everywhere, kill headless voice brains, stop the speech engine and the phone remote">Stop everything</button>
+      <span class="muted small">Per row: Stop = graceful, Kill = immediate. Claude Code sessions in terminals are listed too.</span>
+    </div>
   </section>
 
   <form id="textForm" class="row">

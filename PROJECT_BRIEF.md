@@ -38,6 +38,7 @@ A production-ready Railway template providing browser-based VS Code (code-server
 | `OPENAI_API_KEY` | No | - | Optional OpenAI speech-to-text for Voice Control |
 | `DEEPGRAM_API_KEY` | No | - | Optional Deepgram speech-to-text for Voice Control |
 | `DIGITAL_TWIN_BUNDLED_EXTENSIONS` | No | `on` | `off` ships without the Voice Control extension |
+| `DIGITAL_TWIN_STT_MODEL` | No | `base` | Built-in speech model baked into the image (`tiny`/`base`/`small`/`medium`) |
 
 ---
 
@@ -77,6 +78,7 @@ $HOME/.claude/local       <- Claude Code from volume
 | `railway-entrypoint.sh` | Container startup script |
 | `railway.toml` | Railway deployment config |
 | `README.md` | User documentation |
+| `stt/whisper_worker.py` | Built-in speech-to-text worker (faster-whisper, own venv at /opt/digital-twin/stt/venv) |
 | `extensions/voice-control/` | Voice Control extension source (built into a VSIX by the Dockerfile, installed on boot by the entrypoint) |
 | `src/node/routes/voiceSetup.ts` | Post-2FA per-user Voice Control defaults page (`/voice-setup`), writes a seed the extension consumes |
 | `scripts/diagnose-volume.sh` | Read-only check for "workspace empty after redeploy": volume location, opened folder, candidate workspaces, verdict |

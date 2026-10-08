@@ -51,6 +51,8 @@ the failing test"*, or dictate text into a terminal or editor.
 - **Shows what it heard** and the planned actions; choose *ask every time*,
   *countdown then run*, or *run immediately*. Destructive commands always ask.
 - **Phone and tablet**: open the Voice Remote on any device logged in to the IDE.
+- **Full control**: the panel lists running Claude agents and voice processes
+  with Stop/Kill, a Cancel for the command in flight, and a Stop-everything button.
 - **Built-in speech engine, no key, any browser.** Whisper runs on your own
   server (`faster-whisper`, CPU); audio never leaves it. Works in Chrome, Edge,
   Safari, Firefox, Perplexity Comet, Brave and on phones. The browser's own

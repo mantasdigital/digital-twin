@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { execFile } from "child_process"
 import * as fs from "fs"
 import * as vscode from "vscode"
 import { describe, execute, isDangerous } from "./actions"
@@ -45,6 +46,7 @@ class VoiceController {
   private readonly serverStt: ServerStt
   private pending: Pending | undefined
   private busy = false
+  private inflight: AbortController | undefined
   private recording = false
   private handsFreeOwner: string | undefined
 
@@ -206,6 +208,24 @@ class VoiceController {
         case "openRemote":
           await this.openRemote()
           break
+        case "processes":
+          await this.sendProcesses()
+          break
+        case "kill":
+          await this.killProcess(Number(msg.pid), Boolean(msg.force))
+          break
+        case "stopAll":
+          await this.stopEverything()
+          break
+        case "cancel":
+          this.cancelInflight()
+          break
+        case "closeTerminal": {
+          const t = this.registry.find(String(msg.name || ""))
+          if (t) t.dispose()
+          await this.sendState()
+          break
+        }
         case "openSettings":
           await vscode.commands.executeCommand("workbench.action.openSettings", "digitalTwinVoice")
           break
@@ -303,6 +323,129 @@ class VoiceController {
     this.output.appendLine(`[error] ${message}`)
     this.broadcast({ type: "error", message })
     this.phase("idle")
+  }
+
+  // ---------------------------------------------------------------- processes (agents)
+
+  private knownPids = new Set<number>()
+
+  /** Claude Code sessions, headless voice brains, their children, and the speech worker. */
+  private async listProcesses(): Promise<
+    Array<{ pid: number; ppid: number; kind: string; label: string; uptime: string }>
+  > {
+    // ps truncates user names longer than 8 characters ("digital+"); compare uids instead.
+    const myUid = typeof process.getuid === "function" ? String(process.getuid()) : ""
+    const out = await new Promise<string>((resolve) =>
+      execFile(
+        "ps",
+        ["-eo", "pid,ppid,uid,etime,args", "--no-headers"],
+        { maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout) => resolve(err ? "" : stdout.toString()),
+      ),
+    )
+    const rows = out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const m = l.match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/)
+        return m ? { pid: Number(m[1]), ppid: Number(m[2]), user: m[3], uptime: m[4], args: m[5] } : undefined
+      })
+      .filter((r): r is NonNullable<typeof r> => Boolean(r) && (!myUid || r!.user === myUid) && r!.pid !== process.pid)
+    const isClaude = (args: string) =>
+      /(^|[\s/])claude(\.exe)?(\s|$)|claude-code\/(cli\.js|cli-wrapper\.cjs|bin\/claude)/.test(args) &&
+      !/whisper_worker|code-server|extension/.test(args)
+    const claudePids = new Set(rows.filter((r) => isClaude(r.args)).map((r) => r.pid))
+    const list: Array<{ pid: number; ppid: number; kind: string; label: string; uptime: string }> = []
+    for (const r of rows) {
+      if (/whisper_worker\.py/.test(r.args))
+        list.push({
+          pid: r.pid,
+          ppid: r.ppid,
+          kind: "stt",
+          label: "Speech engine (built-in Whisper)",
+          uptime: r.uptime,
+        })
+      else if (isClaude(r.args)) {
+        const headless = /\s-p\s|--print/.test(r.args)
+        list.push({
+          pid: r.pid,
+          ppid: r.ppid,
+          kind: headless ? "brain" : "claude",
+          label: headless
+            ? "Claude (voice brain, headless)"
+            : `Claude Code session${/dangerously/.test(r.args) ? " (auto mode)" : ""}`,
+          uptime: r.uptime,
+        })
+      } else if (claudePids.has(r.ppid)) {
+        list.push({ pid: r.pid, ppid: r.ppid, kind: "child", label: `↳ ${r.args.slice(0, 70)}`, uptime: r.uptime })
+      }
+    }
+    this.knownPids = new Set(list.map((l) => l.pid))
+    return list.slice(0, 40)
+  }
+
+  private async sendProcesses(): Promise<void> {
+    this.broadcast({ type: "processes", items: await this.listProcesses() })
+  }
+
+  private async killProcess(pid: number, force: boolean): Promise<void> {
+    if (!pid || !this.knownPids.has(pid)) {
+      this.broadcast({ type: "error", message: "That process is no longer listed; refresh and try again." })
+      return
+    }
+    try {
+      process.kill(pid, force ? "SIGKILL" : "SIGTERM")
+      this.output.appendLine(`[kill] ${force ? "SIGKILL" : "SIGTERM"} -> ${pid}`)
+    } catch (err) {
+      this.broadcast({ type: "error", message: `Could not stop ${pid}: ${errorText(err)}` })
+    }
+    setTimeout(() => void this.sendProcesses(), 600)
+  }
+
+  /** Abort the command currently being understood (API call or headless Claude process). */
+  cancelInflight(): void {
+    if (this.inflight) {
+      this.inflight.abort()
+      this.inflight = undefined
+      this.output.appendLine("[cancel] in-flight command cancelled by user")
+    }
+    this.clearPending()
+    this.broadcast({ type: "pendingResolved", accepted: false })
+    this.phase("idle", "Cancelled")
+  }
+
+  /** Panic button: stop listening everywhere, kill voice brains, stop the speech worker and the remote. */
+  async stopEverything(): Promise<void> {
+    this.cancelInflight()
+    this.broadcast({ type: "handsFree", start: false })
+    this.broadcast({ type: "record", start: false })
+    this.clearPending()
+    this.handsFreeOwner = undefined
+    for (const p of await this.listProcesses()) {
+      if (p.kind === "brain" || p.kind === "stt") {
+        try {
+          process.kill(p.pid, "SIGTERM")
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this.serverStt.dispose()
+    this.remote.dispose()
+    this.busy = false
+    this.refreshStatusBar()
+    this.output.appendLine("[stop] everything stopped by user")
+    this.broadcast({
+      type: "actions",
+      heard: "",
+      items: [],
+      needsConfirm: false,
+      countdown: 0,
+      say: "Stopped listening and stopped all voice processes.",
+    })
+    await this.sendState()
+    await this.sendProcesses()
   }
 
   // ---------------------------------------------------------------- commands
@@ -646,7 +789,8 @@ class VoiceController {
           audio,
           mime,
           language: s.language,
-          vocabulary: vocabulary(this.registry, tree),
+          vocabulary: [s.wakePhrase, ...s.wakeAliases, ...vocabulary(this.registry, tree)],
+          wake: s.wakePhrase,
           openaiModel: s.openaiModel,
           deepgramModel: s.deepgramModel,
         })
@@ -665,12 +809,12 @@ class VoiceController {
       const after = matchWake(text, s.wakePhrase, s.wakeAliases)
       if (after === null) {
         this.output.appendLine(`[wake] ignored: ${text.slice(0, 80)}`)
-        this.broadcast({ type: "wakeResult", matched: false })
+        this.broadcast({ type: "wakeResult", matched: false, heard: text.slice(0, 120) })
         return
       }
       const hasCommand = after.split(" ").filter(Boolean).length >= 2
       this.output.appendLine(`[wake] heard "${s.wakePhrase}"${hasCommand ? ` + command: ${after}` : ""}`)
-      this.broadcast({ type: "wakeResult", matched: true, command: hasCommand })
+      this.broadcast({ type: "wakeResult", matched: true, command: hasCommand, heard: text.slice(0, 120) })
       if (hasCommand) await this.handleTranscript(after)
       return
     }
@@ -720,6 +864,8 @@ class VoiceController {
       return
     }
     this.busy = true
+    const controller = new AbortController()
+    this.inflight = controller
     try {
       this.phase("thinking", brain === "claudeAccount" ? "Asking Claude (your account)…" : "Thinking…")
       const tree = await snapshotTree()
@@ -727,8 +873,20 @@ class VoiceController {
       const context = buildContext(this.registry, tree)
       const result =
         brain === "apiKey"
-          ? await interpret({ apiKey: (await this.keys.anthropic())!, model: s.model, transcript: text, context })
-          : await interpretViaClaudeCode({ claudePath: findClaudeBinary()!, model: s.model, transcript: text, context })
+          ? await interpret({
+              apiKey: (await this.keys.anthropic())!,
+              model: s.model,
+              transcript: text,
+              context,
+              signal: controller.signal,
+            })
+          : await interpretViaClaudeCode({
+              claudePath: findClaudeBinary()!,
+              model: s.model,
+              transcript: text,
+              context,
+              signal: controller.signal,
+            })
       this.output.appendLine(`[claude] ${JSON.stringify(result)}`)
       const items = result.actions.map((a) => ({ label: describe(a), dangerous: isDangerous(a) }))
       const dangerous = s.confirmDangerous && items.some((i) => i.dangerous)
@@ -749,8 +907,12 @@ class VoiceController {
         return
       }
       await this.runActions(result.actions, tree)
+    } catch (err) {
+      if (controller.signal.aborted) return // cancelled by the user; status already set
+      throw err
     } finally {
       this.busy = false
+      if (this.inflight === controller) this.inflight = undefined
     }
   }
 
@@ -838,6 +1000,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("digitalTwinVoice.setSpeechKey", () => controller.setSpeechKey()),
     vscode.commands.registerCommand("digitalTwinVoice.claudeLogin", () => controller.claudeLogin()),
     vscode.commands.registerCommand("digitalTwinVoice.clearKeys", () => controller.clearKeys()),
+    vscode.commands.registerCommand("digitalTwinVoice.stopEverything", () => controller.stopEverything()),
   )
   void controller.start()
 }

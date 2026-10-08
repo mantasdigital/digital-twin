@@ -393,3 +393,59 @@ html[data-mode="remote"] .level {
   width: 220px;
   height: 8px;
 }
+
+/* ---- v0.3.2: processes ---- */
+.procs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.procs li.proc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.08);
+  font-size: 12px;
+}
+.procs li.proc span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.procs li.claude {
+  border-left: 3px solid var(--accent);
+}
+.procs li.brain {
+  border-left: 3px solid #e2b93d;
+}
+.procs li.stt {
+  border-left: 3px solid var(--ok);
+}
+.procs li.child {
+  border-left: 3px solid var(--border);
+  opacity: 0.85;
+}
+button.small-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+.terminals li a {
+  color: inherit;
+  text-decoration: none;
+  opacity: 0.6;
+  margin-left: 2px;
+}
+.terminals li a:hover {
+  opacity: 1;
+}

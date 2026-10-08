@@ -19,6 +19,8 @@ export interface TranscribeOptions {
   mime: string
   language: string
   vocabulary: string[]
+  /** Wake phrase (hands-free probes): biases the engines towards it. */
+  wake?: string
   openaiModel: string
   deepgramModel: string
 }
@@ -26,7 +28,7 @@ export interface TranscribeOptions {
 export async function transcribe(opts: TranscribeOptions): Promise<string> {
   if (opts.provider === "server") {
     if (!opts.server) throw new Error("Built-in speech engine is not available on this image.")
-    return opts.server.transcribe(opts.audio, opts.mime, opts.language, opts.vocabulary)
+    return opts.server.transcribe(opts.audio, opts.mime, opts.language, opts.vocabulary, opts.wake || "")
   }
   if (opts.provider === "openai") return transcribeOpenAI(opts)
   return transcribeDeepgram(opts)
@@ -167,7 +169,7 @@ export class ServerStt {
     return this.ready
   }
 
-  async transcribe(audio: Buffer, mime: string, language: string, vocabulary: string[]): Promise<string> {
+  async transcribe(audio: Buffer, mime: string, language: string, vocabulary: string[], wake = ""): Promise<string> {
     await this.ensure()
     const id = crypto.randomBytes(6).toString("hex")
     const file = path.join(os.tmpdir(), `dtv-${id}.${extensionFor(mime)}`)
@@ -179,7 +181,9 @@ export class ServerStt {
         reject(new Error("Built-in speech engine timed out"))
       }, 90_000)
       this.pending.set(id, { resolve, reject, timer })
-      this.proc!.stdin.write(JSON.stringify({ id, file, language, prompt: vocabulary.join(", "), delete: true }) + "\n")
+      this.proc!.stdin.write(
+        JSON.stringify({ id, file, language, prompt: vocabulary.join(", "), wake, delete: true }) + "\n",
+      )
     })
   }
 
@@ -214,7 +218,10 @@ async function transcribeOpenAI(opts: TranscribeOptions): Promise<string> {
   if (opts.language) form.append("language", iso639(opts.language))
   if (opts.vocabulary.length) {
     // The prompt biases recognition toward these spellings.
-    form.append("prompt", `Developer dictation in VS Code. Terms: ${opts.vocabulary.join(", ")}.`)
+    form.append(
+      "prompt",
+      `Developer dictation in VS Code.${opts.wake ? ` ${opts.wake}, open a terminal.` : ""} Terms: ${opts.vocabulary.join(", ")}.`,
+    )
   }
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -236,7 +243,8 @@ async function transcribeDeepgram(opts: TranscribeOptions): Promise<string> {
   if (opts.language) params.set("language", opts.language)
   // Nova-3 takes "keyterm" hints; older models use "keywords".
   const hintParam = /nova-3/.test(opts.deepgramModel) ? "keyterm" : "keywords"
-  for (const term of opts.vocabulary.slice(0, 50)) params.append(hintParam, term)
+  for (const term of [...(opts.wake ? [opts.wake] : []), ...opts.vocabulary.slice(0, 50)])
+    params.append(hintParam, term)
 
   const res = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
     method: "POST",

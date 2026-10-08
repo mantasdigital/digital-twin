@@ -237,7 +237,8 @@ export function matchWake(text: string, phrase: string, aliases: string[]): stri
     const ph = normalizeSpeech(raw)
     if (!ph) continue
     const pw = ph.split(" ").length
-    const tol = Math.max(1, Math.floor(ph.replace(/ /g, "").length / 4))
+    // speech engines mangle short phrases ("hey tween", "a twin"): allow ~1 edit per 3 letters
+    const tol = Math.max(1, Math.round(ph.replace(/ /g, "").length / 3))
     for (let i = 0; i + pw <= words.length; i++) {
       const span = words.slice(i, i + pw).join(" ")
       if (span === ph || levenshtein(span.replace(/ /g, ""), ph.replace(/ /g, "")) <= tol) {

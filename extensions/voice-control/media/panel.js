@@ -96,6 +96,7 @@
         break
       case "status":
         state.busy = msg.phase !== "idle" && msg.phase !== "confirm"
+        $("btnCancelBusy").classList.toggle("hidden", !state.busy)
         $("mic").classList.toggle("busy", state.busy && cap.phase !== "capture")
         if (msg.phase === "idle") idleStatus(msg.text)
         else if (msg.phase === "confirm") setStatus("busy", msg.text || "Confirm?")
@@ -127,6 +128,9 @@
         break
       case "wakeResult":
         onWakeResult(msg)
+        break
+      case "processes":
+        renderProcesses(msg.items || [])
         break
     }
   }
@@ -220,10 +224,57 @@
     }
     for (const t of list) {
       const li = document.createElement("li")
-      li.textContent = `${t.index}: ${t.name}`
+      li.textContent = `${t.index}: ${t.name} `
       if (t.active) li.classList.add("active")
+      const x = document.createElement("a")
+      x.href = "#"
+      x.textContent = "✕"
+      x.title = `Close terminal "${t.name}"`
+      x.addEventListener("click", (e) => {
+        e.preventDefault()
+        post({ type: "closeTerminal", name: t.name })
+      })
+      li.appendChild(x)
       ul.appendChild(li)
     }
+  }
+
+  function renderProcesses(items) {
+    const ul = $("processes")
+    ul.innerHTML = ""
+    if (!items.length) {
+      const li = document.createElement("li")
+      li.className = "muted"
+      li.textContent = "no Claude or voice processes running"
+      ul.appendChild(li)
+      return
+    }
+    for (const p of items) {
+      const li = document.createElement("li")
+      li.className = "proc " + p.kind
+      const label = document.createElement("span")
+      label.textContent = `${p.label} · pid ${p.pid} · ${p.uptime}`
+      li.appendChild(label)
+      for (const [text, force] of [
+        ["Stop", false],
+        ["Kill", true],
+      ]) {
+        const b = document.createElement("button")
+        b.textContent = text
+        b.className = force ? "danger small-btn" : "small-btn"
+        b.addEventListener("click", () => post({ type: "kill", pid: p.pid, force }))
+        li.appendChild(b)
+      }
+      ul.appendChild(li)
+    }
+  }
+  let procTimer = null
+  function startProcessRefresh() {
+    clearInterval(procTimer)
+    post({ type: "processes" })
+    procTimer = setInterval(() => {
+      if (document.visibilityState === "visible") post({ type: "processes" })
+    }, 5000)
   }
 
   // ------------------------------------------------------------ settings editor
@@ -856,6 +907,7 @@
 
   function onWakeResult(msg) {
     utt.inflight = Math.max(0, utt.inflight - 1)
+    if (!msg.matched && msg.heard) showHeard("", `(no wake word) ${msg.heard}`)
     if (!hf.armed) return
     if (!msg.matched) {
       if (msg.error) showError(msg.error)
@@ -876,6 +928,19 @@
     } catch (err) {
       micFailure(err)
       disarm()
+      return
+    }
+    if (!(await ensureAudioRunning())) {
+      // Armed without a user gesture (auto-start): the browser keeps audio
+      // suspended until the user interacts. Resume on the first tap/key.
+      setStatus("armed", "Tap anywhere once to start listening")
+      const resume = async () => {
+        document.removeEventListener("pointerdown", resume, true)
+        document.removeEventListener("keydown", resume, true)
+        if (await ensureAudioRunning()) idleStatus()
+      }
+      document.addEventListener("pointerdown", resume, true)
+      document.addEventListener("keydown", resume, true)
       return
     }
     idleStatus()
@@ -951,11 +1016,22 @@
     users: 0,
   }
 
+  async function ensureAudioRunning() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      if (audioCtx.state === "suspended") await audioCtx.resume()
+    } catch (e) {
+      /* ignore */
+    }
+    return Boolean(audioCtx && audioCtx.state === "running")
+  }
+
   async function openMic() {
     if (mic.stream) {
       mic.users++
       return mic
     }
+    await ensureAudioRunning()
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
       throw Object.assign(new Error("no mediaDevices"), { name: "NotSupportedError" })
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -1177,6 +1253,16 @@
   $("btnCancel").addEventListener("click", () => post({ type: "confirm", accept: false }))
   $("btnRunNow").addEventListener("click", () => post({ type: "confirm", accept: true }))
   $("btnCancelCountdown").addEventListener("click", () => post({ type: "confirm", accept: false }))
+  $("btnRefreshProcs").addEventListener("click", (e) => {
+    e.preventDefault()
+    post({ type: "processes" })
+  })
+  $("btnCancelBusy").addEventListener("click", () => post({ type: "cancel" }))
+  $("btnStopAll").addEventListener("click", () => {
+    if (hf.armed) disarm()
+    if (cap.phase === "capture") abortCapture()
+    post({ type: "stopAll" })
+  })
   $("btnRemote").addEventListener("click", (e) => {
     e.preventDefault()
     post({ type: "openRemote" })
@@ -1220,6 +1306,7 @@
   })
   if (isIOS) $("hint").textContent += " On iPhone/iPad keep this page open; the screen lock stops the microphone."
 
+  startProcessRefresh()
   window.__dtvPost = post // test hook: headless checks push real audio through the whole pipeline
   if (mode === "webview") post({ type: "ready", clientId, kind: "webview", ua: navigator.userAgent })
   post({

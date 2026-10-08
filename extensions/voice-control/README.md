@@ -106,6 +106,16 @@ the phone) or in VS Code settings under `digitalTwinVoice.*`.
 `digitalTwinVoice.enabled: false` turns the whole feature off; the first-run
 prompt also offers "Turn off".
 
+## Stopping things
+
+The panel's **Claude agents & voice processes** card lists every Claude Code
+session, headless voice brain, their child processes and the built-in speech
+engine, each with **Stop** (SIGTERM) and **Kill** (SIGKILL). **Stop everything**
+disarms listening on all devices, kills headless brains, stops the speech
+engine and the phone remote (also as the command *Voice: Stop Everything*).
+While a command is being understood a **Cancel** button aborts it. Terminals
+have a ✕ to close them, and "stop listening" by voice disarms hands-free.
+
 ## Phone, tablet, second tab
 
 **Open on phone / tablet / new tab** starts a small server on
