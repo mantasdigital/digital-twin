@@ -364,3 +364,32 @@ button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ---- v0.3: level meter ---- */
+.level {
+  width: 160px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.2);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.level.active {
+  opacity: 1;
+}
+.level div {
+  height: 100%;
+  width: 0;
+  background: var(--muted);
+  transition:
+    width 0.1s linear,
+    background 0.1s;
+}
+.level div.speaking {
+  background: var(--ok);
+}
+html[data-mode="remote"] .level {
+  width: 220px;
+  height: 8px;
+}

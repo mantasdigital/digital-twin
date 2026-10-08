@@ -21,3 +21,6 @@ extensions/voice-control/*.vsix
 
 # Build-time webview patch
 !scripts/patch-webview-microphone.py
+
+# Built-in speech-to-text worker
+!stt/**

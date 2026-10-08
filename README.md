@@ -51,6 +51,13 @@ the failing test"*, or dictate text into a terminal or editor.
 - **Shows what it heard** and the planned actions; choose *ask every time*,
   *countdown then run*, or *run immediately*. Destructive commands always ask.
 - **Phone and tablet**: open the Voice Remote on any device logged in to the IDE.
+- **Built-in speech engine, no key, any browser.** Whisper runs on your own
+  server (`faster-whisper`, CPU); audio never leaves it. Works in Chrome, Edge,
+  Safari, Firefox, Perplexity Comet, Brave and on phones. The browser's own
+  engine (Chrome/Edge/Safari only) and OpenAI/Deepgram remain as options.
+- **Hears quiet and whispered speech**: automatic gain, compression and
+  adaptive voice detection on the microphone, a live level meter, and (on
+  Chrome 139+) phrase biasing toward your wake word and project vocabulary.
 - **Works with your Claude account**, the same login the `claude` terminal
   command uses, so no API key is needed (an Anthropic API key is the faster,
   pay-per-use alternative).
@@ -81,6 +88,7 @@ the failing test"*, or dictate text into a terminal or editor.
 | `OPENAI_API_KEY`     | –                              | Optional: OpenAI speech-to-text for Voice Control    |
 | `DEEPGRAM_API_KEY`   | –                              | Optional: Deepgram speech-to-text for Voice Control  |
 | `DIGITAL_TWIN_BUNDLED_EXTENSIONS` | `on`              | `off` ships the server without the Voice Control extension |
+| `DIGITAL_TWIN_STT_MODEL` | `base`                       | Built-in speech model: `tiny`, `base`, `small`, `medium` (bigger = more accurate, slower) |
 
 ### Volume Configuration
 

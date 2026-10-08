@@ -165,6 +165,26 @@ COPY scripts/patch-webview-microphone.py /opt/digital-twin/patch-webview-microph
 RUN python3 /opt/digital-twin/patch-webview-microphone.py /usr/lib/code-server || echo "WARNING: webview microphone patch incomplete (see above)"
 
 # ============================================================================
+# BUILT-IN SPEECH-TO-TEXT (server engine for Voice Control)
+# faster-whisper on CPU (int8). Works in every browser, needs no API key, and
+# audio never leaves the server. The model is baked into the image so first
+# use is instant and offline. ARG DIGITAL_TWIN_STT=off skips all of this.
+# ============================================================================
+
+ARG DIGITAL_TWIN_STT=on
+ARG DIGITAL_TWIN_STT_MODEL=base
+ENV DIGITAL_TWIN_STT_MODEL=${DIGITAL_TWIN_STT_MODEL}
+ENV HF_HOME=/opt/digital-twin/models
+COPY stt/whisper_worker.py /opt/digital-twin/stt/whisper_worker.py
+RUN if [ "$DIGITAL_TWIN_STT" = "on" ]; then \
+        pip3 install --break-system-packages --no-cache-dir "faster-whisper>=1.1" "av<16" \
+        && mkdir -p /opt/digital-twin/models \
+        && python3 -c "from faster_whisper import WhisperModel; WhisperModel('${DIGITAL_TWIN_STT_MODEL}', device='cpu', compute_type='int8')" \
+        && chmod -R a+rX /opt/digital-twin/models \
+        && echo "Built-in speech-to-text ready (faster-whisper, model ${DIGITAL_TWIN_STT_MODEL})"; \
+    else echo "Built-in speech-to-text skipped (DIGITAL_TWIN_STT=off)"; fi
+
+# ============================================================================
 # CLAUDE CODE CLI INSTALLATION
 # Install globally via npm and provide a location-agnostic launcher.  The
 # wrapper prefers a user-installed copy on the volume, then the image's

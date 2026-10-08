@@ -1,12 +1,20 @@
+import { ChildProcessWithoutNullStreams, execFile, spawn } from "child_process"
+import * as crypto from "crypto"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
+
 /**
- * Server-side speech-to-text. The browser provider needs nothing here (the
- * webview sends finished text); OpenAI and Deepgram receive the recorded clip.
- * Node 22 provides fetch, FormData and Blob globally.
+ * Speech-to-text behind the panel. The browser provider needs nothing here
+ * (the webview sends finished text). The built-in server provider runs a
+ * long-lived faster-whisper worker on this machine; OpenAI and Deepgram
+ * receive the recorded clip. Node 22 provides fetch, FormData and Blob.
  */
 
 export interface TranscribeOptions {
-  provider: "openai" | "deepgram"
+  provider: "server" | "openai" | "deepgram"
   apiKey: string
+  server?: ServerStt
   audio: Buffer
   mime: string
   language: string
@@ -16,8 +24,161 @@ export interface TranscribeOptions {
 }
 
 export async function transcribe(opts: TranscribeOptions): Promise<string> {
+  if (opts.provider === "server") {
+    if (!opts.server) throw new Error("Built-in speech engine is not available on this image.")
+    return opts.server.transcribe(opts.audio, opts.mime, opts.language, opts.vocabulary)
+  }
   if (opts.provider === "openai") return transcribeOpenAI(opts)
   return transcribeDeepgram(opts)
+}
+
+// ---------------------------------------------------------------------------
+// Built-in server engine: python worker (stt/whisper_worker.py), JSON lines.
+// ---------------------------------------------------------------------------
+
+interface Pending {
+  resolve: (text: string) => void
+  reject: (err: Error) => void
+  timer: NodeJS.Timeout
+}
+
+export class ServerStt {
+  /** undefined until probed; then whether python3 can import faster_whisper. */
+  available: boolean | undefined
+  lastError = ""
+  model = ""
+  private proc: ChildProcessWithoutNullStreams | undefined
+  private ready: Promise<void> | undefined
+  private readonly pending = new Map<string, Pending>()
+  private buffer = ""
+
+  constructor(
+    readonly workerPath: string | undefined,
+    private readonly log: (line: string) => void,
+  ) {}
+
+  static findWorker(extensionPath: string): string | undefined {
+    const candidates = [
+      process.env.DIGITAL_TWIN_STT_WORKER || "",
+      "/opt/digital-twin/stt/whisper_worker.py",
+      path.join(extensionPath, "..", "..", "stt", "whisper_worker.py"), // repo checkout
+    ]
+    return candidates.find((p) => p && fs.existsSync(p))
+  }
+
+  /** Cheap check (no model load): is the python side installed? */
+  async probe(): Promise<boolean> {
+    if (!this.workerPath || process.env.DIGITAL_TWIN_STT === "off") {
+      this.available = false
+      this.lastError = this.workerPath ? "disabled (DIGITAL_TWIN_STT=off)" : "worker script not found"
+      return false
+    }
+    return new Promise((resolve) => {
+      execFile(
+        "python3",
+        ["-c", "import faster_whisper, av, ctranslate2"],
+        { timeout: 30_000 },
+        (err, _out, stderr) => {
+          this.available = !err
+          this.lastError = err
+            ? String(stderr || err.message)
+                .split("\n")
+                .slice(-1)[0]
+            : ""
+          if (err) this.log(`[stt] built-in engine unavailable: ${this.lastError}`)
+          resolve(!err)
+        },
+      )
+    })
+  }
+
+  private ensure(): Promise<void> {
+    if (this.proc && this.ready) return this.ready
+    const proc = spawn("python3", [this.workerPath!], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] })
+    this.proc = proc
+    this.buffer = ""
+    this.ready = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Built-in speech engine took too long to start")), 180_000)
+      proc.stdout.on("data", (chunk) => {
+        this.buffer += chunk.toString()
+        let idx: number
+        while ((idx = this.buffer.indexOf("\n")) >= 0) {
+          const line = this.buffer.slice(0, idx).trim()
+          this.buffer = this.buffer.slice(idx + 1)
+          if (!line) continue
+          let msg: any
+          try {
+            msg = JSON.parse(line)
+          } catch {
+            this.log(`[stt] ${line}`)
+            continue
+          }
+          if ("ready" in msg) {
+            clearTimeout(timer)
+            if (msg.ready) {
+              this.model = String(msg.model || "")
+              this.log(`[stt] built-in engine ready (model ${this.model}, ${msg.load_ms} ms)`)
+              resolve()
+            } else {
+              this.lastError = String(msg.error || "unknown error")
+              reject(new Error(`Built-in speech engine failed to start: ${this.lastError}`))
+            }
+            continue
+          }
+          const p = msg.id ? this.pending.get(String(msg.id)) : undefined
+          if (!p) continue
+          this.pending.delete(String(msg.id))
+          clearTimeout(p.timer)
+          if (msg.error) p.reject(new Error(`Built-in speech engine: ${msg.error}`))
+          else {
+            this.log(`[stt] ${msg.seconds ?? "?"}s of audio -> ${msg.ms} ms`)
+            p.resolve(String(msg.text ?? ""))
+          }
+        }
+      })
+      proc.stderr.on("data", (chunk) => {
+        const text = chunk.toString().trim()
+        if (text && !/Warning: You are sending unauthenticated/.test(text)) this.log(`[stt:py] ${text.slice(0, 300)}`)
+      })
+      proc.on("exit", (code, signal) => {
+        this.log(`[stt] worker exited (${code ?? signal})`)
+        for (const p of this.pending.values()) {
+          clearTimeout(p.timer)
+          p.reject(new Error("Built-in speech engine stopped"))
+        }
+        this.pending.clear()
+        this.proc = undefined
+        this.ready = undefined
+      })
+      proc.on("error", (err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+    })
+    return this.ready
+  }
+
+  async transcribe(audio: Buffer, mime: string, language: string, vocabulary: string[]): Promise<string> {
+    await this.ensure()
+    const id = crypto.randomBytes(6).toString("hex")
+    const file = path.join(os.tmpdir(), `dtv-${id}.${extensionFor(mime)}`)
+    await fs.promises.writeFile(file, audio, { mode: 0o600 })
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        fs.promises.unlink(file).catch(() => undefined)
+        reject(new Error("Built-in speech engine timed out"))
+      }, 90_000)
+      this.pending.set(id, { resolve, reject, timer })
+      this.proc!.stdin.write(JSON.stringify({ id, file, language, prompt: vocabulary.join(", "), delete: true }) + "\n")
+    })
+  }
+
+  dispose(): void {
+    this.proc?.kill()
+    this.proc = undefined
+    this.ready = undefined
+  }
 }
 
 function extensionFor(mime: string): string {

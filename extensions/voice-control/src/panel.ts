@@ -287,6 +287,7 @@ ${remoteHead}
     <button id="mic" class="mic" title="Tap to talk (Ctrl+Shift+Space)">
       <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M8 21h8"/></svg>
     </button>
+    <div class="level" id="level"><div id="levelBar"></div></div>
     <div id="hint" class="muted">Tap to talk. Stop with a pause, the end word, or another tap.</div>
     <div id="micError" class="error hidden"></div>
   </section>
@@ -325,10 +326,11 @@ ${remoteHead}
       <label>Pause that ends a command (s) <input data-setting="listening.pauseSeconds" type="number" min="1.5" max="30" step="0.5"></label>
       <label>Confirmation <select data-setting="confirmation.mode"><option value="ask">Ask every time</option><option value="countdown">Show, then run after countdown</option><option value="auto">Run immediately</option></select></label>
       <label>Countdown (s) <input data-setting="confirmation.countdownSeconds" type="number" min="2" max="30" step="1"></label>
-      <label>Speech engine <select data-setting="speech.provider"><option value="browser">Browser (free)</option><option value="openai">OpenAI</option><option value="deepgram">Deepgram</option></select></label>
+      <label>Speech engine <select data-setting="speech.provider"><option value="auto">Auto (built-in server if available)</option><option value="server">Built-in server (Whisper, any browser)</option><option value="browser">Browser (free, Chrome/Edge/Safari)</option><option value="openai">OpenAI</option><option value="deepgram">Deepgram</option></select></label>
       <label>Language <input data-setting="speech.language" type="text" placeholder="auto (e.g. en-US, lt)"></label>
       <label class="check-row"><input data-setting="listening.autoStart" type="checkbox"> Start wake-word listening when the panel opens</label>
       <label class="check-row"><input data-setting="listening.chime" type="checkbox"> Chime on wake / done</label>
+      <label class="check-row"><input data-setting="listening.enhanceMic" type="checkbox"> Boost quiet / whispered speech (gain + compression)</label>
       <label class="check-row"><input data-setting="speakReplies" type="checkbox"> Speak replies</label>
     </div>
     <div class="row">

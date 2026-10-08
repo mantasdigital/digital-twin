@@ -5,8 +5,10 @@ import { describe, execute, isDangerous } from "./actions"
 import {
   claudeCodeInstalled,
   claudeCodeLoggedIn,
+  ConcreteProvider,
   findClaudeBinary,
   Keys,
+  matchWake,
   SECRET_ANTHROPIC,
   SECRET_DEEPGRAM,
   SECRET_OPENAI,
@@ -18,7 +20,7 @@ import {
 } from "./config"
 import { Action, interpret, interpretViaClaudeCode } from "./intent"
 import { ClientMessage, PanelViewProvider, RemoteServer } from "./panel"
-import { transcribe } from "./stt"
+import { ServerStt, transcribe } from "./stt"
 import { buildContext, snapshotTree, TerminalRegistry, vocabulary } from "./workspace"
 
 const FIRST_RUN_KEY = "digitalTwinVoice.firstRunShown"
@@ -40,6 +42,7 @@ class VoiceController {
   private readonly remote: RemoteServer
   private readonly output: vscode.OutputChannel
   private readonly status: vscode.StatusBarItem
+  private readonly serverStt: ServerStt
   private pending: Pending | undefined
   private busy = false
   private recording = false
@@ -48,6 +51,8 @@ class VoiceController {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.keys = new Keys(context.secrets)
     this.output = vscode.window.createOutputChannel("Voice Control")
+    this.serverStt = new ServerStt(ServerStt.findWorker(context.extensionPath), (line) => this.output.appendLine(line))
+    void this.serverStt.probe().then(() => this.sendState())
     this.panel = new PanelViewProvider(context.extensionUri, (m) => this.onClientMessage(m))
     this.remote = new RemoteServer(context.extensionPath, (m) => this.onClientMessage(m))
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000)
@@ -70,7 +75,15 @@ class VoiceController {
         }
       }),
       { dispose: () => this.remote.dispose() },
+      { dispose: () => this.serverStt.dispose() },
     )
+  }
+
+  /** The speech engine actually in use ("auto" resolved). */
+  private resolveProvider(): ConcreteProvider {
+    const p = settings().provider
+    if (p === "auto") return this.serverStt.available ? "server" : "browser"
+    return p
   }
 
   // ---------------------------------------------------------------- brain
@@ -171,7 +184,12 @@ class VoiceController {
           await this.handleTranscript(String(msg.text ?? ""))
           break
         case "audio":
-          await this.handleAudio(String(msg.data ?? ""), String(msg.mime ?? "audio/webm"), String(msg.hint ?? ""))
+          await this.handleAudio(
+            String(msg.data ?? ""),
+            String(msg.mime ?? "audio/webm"),
+            String(msg.hint ?? ""),
+            msg.purpose === "wake" ? "wake" : "command",
+          )
           break
         case "confirm":
           await this.resolvePending(Boolean(msg.accept))
@@ -203,7 +221,9 @@ class VoiceController {
   async sendState(): Promise<void> {
     const s = settings()
     const anthropic = Boolean(await this.keys.anthropic())
-    const speechKey = s.provider === "browser" ? true : Boolean(await this.keys.speech(s.provider))
+    const provider = this.resolveProvider()
+    const speechKey = await this.keys.speechReady(provider)
+    const tree = await snapshotTree()
     const listeningChosen = this.context.globalState.get<boolean>("digitalTwinVoice.listeningChosen", false)
     const brain = await this.resolveBrain()
     this.broadcast({
@@ -212,8 +232,15 @@ class VoiceController {
       brain: s.brain,
       brainActive: brain ?? null,
       model: s.model,
-      provider: s.provider,
-      sttMode: s.provider === "browser" ? "browser" : "record",
+      provider,
+      providerSetting: s.provider,
+      sttMode: provider === "browser" ? "browser" : "record",
+      serverStt: {
+        available: this.serverStt.available ?? null,
+        model: this.serverStt.model,
+        error: this.serverStt.lastError,
+      },
+      vocabulary: vocabulary(this.registry, tree).slice(0, 40),
       language: s.language,
       speakReplies: s.speakReplies,
       listening: {
@@ -226,6 +253,7 @@ class VoiceController {
         autoStart: s.autoStart,
         chime: s.chime,
         preferOnDevice: s.preferOnDevice,
+        enhanceMic: s.enhanceMic,
       },
       confirmation: { mode: s.confirmationMode, countdownSeconds: s.countdownSeconds },
       setup: {
@@ -479,12 +507,22 @@ class VoiceController {
   }
 
   async chooseProvider(title = "Speech engine"): Promise<void> {
-    const picks: Array<vscode.QuickPickItem & { id: SpeechProvider }> = [
+    const picks: Array<vscode.QuickPickItem & { id: SpeechProvider }> = []
+    if (this.serverStt.available) {
+      picks.push({
+        id: "server",
+        label: "$(server) Built-in (Whisper on this server)",
+        description: "free, no key, every browser",
+        detail:
+          "Audio never leaves the server. Works in Comet, Brave, Firefox and on phones. A second or two per command.",
+      })
+    }
+    picks.push(
       {
         id: "browser",
         label: "Browser speech recognition",
-        description: "free, no key, Chrome/Edge/Safari",
-        detail: "Fine for short commands. Weakest on technical words.",
+        description: "free, no key, Chrome/Edge/Safari only",
+        detail: "Fine for short commands. Weakest on technical words; audio goes to the browser vendor.",
       },
       {
         id: "openai",
@@ -498,18 +536,19 @@ class VoiceController {
         description: "high accuracy, fast, needs Deepgram key",
         detail: "Takes vocabulary hints from your workspace.",
       },
-    ]
+    )
     const pick = await vscode.window.showQuickPick(picks, { title, ignoreFocusOut: true })
     if (!pick) return
     await updateSetting("speech.provider", pick.id)
-    if (pick.id !== "browser" && !(await this.keys.speech(pick.id))) await this.setSpeechKey(pick.id)
+    if ((pick.id === "openai" || pick.id === "deepgram") && !(await this.keys.speech(pick.id)))
+      await this.setSpeechKey(pick.id)
     await this.sendState()
   }
 
   async setSpeechKey(provider: SpeechProvider = settings().provider): Promise<void> {
-    if (provider === "browser") {
+    if (provider === "auto" || provider === "server" || provider === "browser") {
       vscode.window.showInformationMessage(
-        "The browser speech engine needs no key. Choose OpenAI or Deepgram for higher accuracy.",
+        "The built-in and browser speech engines need no key. Choose OpenAI or Deepgram for a key-based engine.",
       )
       return
     }
@@ -579,42 +618,61 @@ class VoiceController {
 
   // ---------------------------------------------------------------- pipeline
 
-  private async handleAudio(base64: string, mime: string, hint: string): Promise<void> {
+  private async handleAudio(base64: string, mime: string, hint: string, purpose: "command" | "wake"): Promise<void> {
     const s = settings()
-    if (s.provider === "browser") {
-      if (hint) return this.handleTranscript(hint)
-      this.broadcast({ type: "error", message: "Speech provider is 'browser'; audio clips are not expected." })
-      return
-    }
-    const apiKey = await this.keys.speech(s.provider)
-    if (!apiKey) {
-      this.broadcast({ type: "error", message: `No ${s.provider} API key. Add one in Settings.` })
-      return
-    }
-    const audio = Buffer.from(base64, "base64")
-    if (audio.length < 1000) {
-      this.phase("idle", "Too short, try again")
-      return
-    }
-    this.phase("transcribing", "Transcribing…")
-    const tree = await snapshotTree()
+    const provider = this.resolveProvider()
     let text: string
-    try {
-      text = await transcribe({
-        provider: s.provider,
-        apiKey,
-        audio,
-        mime,
-        language: s.language,
-        vocabulary: vocabulary(this.registry, tree),
-        openaiModel: s.openaiModel,
-        deepgramModel: s.deepgramModel,
-      })
-    } catch (err) {
-      if (hint) {
-        this.output.appendLine(`[stt] ${errorText(err)}; falling back to browser transcript`)
-        text = hint
-      } else throw err
+    if (provider === "browser") {
+      text = hint
+    } else {
+      const audio = Buffer.from(base64, "base64")
+      if (audio.length < 1000) {
+        if (purpose === "command") this.phase("idle", "Too short, try again")
+        return
+      }
+      if (purpose === "command")
+        this.phase("transcribing", provider === "server" ? "Transcribing on this server…" : "Transcribing…")
+      const tree = await snapshotTree()
+      const apiKey = (await this.keys.speech(provider)) || ""
+      if ((provider === "openai" || provider === "deepgram") && !apiKey) {
+        this.broadcast({ type: "error", message: `No ${provider} API key. Add one in Settings.` })
+        return
+      }
+      try {
+        text = await transcribe({
+          provider,
+          apiKey,
+          server: this.serverStt,
+          audio,
+          mime,
+          language: s.language,
+          vocabulary: vocabulary(this.registry, tree),
+          openaiModel: s.openaiModel,
+          deepgramModel: s.deepgramModel,
+        })
+      } catch (err) {
+        if (hint) {
+          this.output.appendLine(`[stt] ${errorText(err)}; falling back to browser transcript`)
+          text = hint
+        } else if (purpose === "wake") {
+          this.output.appendLine(`[wake] ${errorText(err)}`)
+          this.broadcast({ type: "wakeResult", matched: false, error: errorText(err) })
+          return
+        } else throw err
+      }
+    }
+    if (purpose === "wake") {
+      const after = matchWake(text, s.wakePhrase, s.wakeAliases)
+      if (after === null) {
+        this.output.appendLine(`[wake] ignored: ${text.slice(0, 80)}`)
+        this.broadcast({ type: "wakeResult", matched: false })
+        return
+      }
+      const hasCommand = after.split(" ").filter(Boolean).length >= 2
+      this.output.appendLine(`[wake] heard "${s.wakePhrase}"${hasCommand ? ` + command: ${after}` : ""}`)
+      this.broadcast({ type: "wakeResult", matched: true, command: hasCommand })
+      if (hasCommand) await this.handleTranscript(after)
+      return
     }
     await this.handleTranscript(text)
   }

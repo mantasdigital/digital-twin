@@ -2,7 +2,7 @@
   "name": "digital-twin-voice",
   "displayName": "Digital Twin Voice Control",
   "description": "Talk to your Digital Twin: open terminals, run commands, open folders, download files and hand tasks to Claude Code by voice.",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "publisher": "digital-twin",
   "license": "MIT",
   "private": true,
@@ -114,14 +114,18 @@
         },
         "digitalTwinVoice.speech.provider": {
           "type": "string",
-          "default": "browser",
+          "default": "auto",
           "enum": [
+            "auto",
+            "server",
             "browser",
             "openai",
             "deepgram"
           ],
           "enumDescriptions": [
-            "Browser built-in speech recognition. Free, no key, works in Chrome/Edge/Safari. Weakest on technical words.",
+            "Built-in server engine when this image has it, otherwise the browser engine.",
+            "Built-in: Whisper running on this server. Free, no key, works in every browser (Comet, Brave, Firefox included); audio never leaves the server.",
+            "Browser built-in speech recognition. Free, no key, Chrome/Edge/Safari only; audio goes to the browser vendor.",
             "OpenAI transcription (gpt-4o-transcribe / whisper). High accuracy. Needs an OpenAI API key.",
             "Deepgram Nova. High accuracy, supports vocabulary hints. Needs a Deepgram API key."
           ],
@@ -271,6 +275,12 @@
             "Anthropic API key via the Messages API. Fastest (about 1-2 s), billed per use."
           ],
           "description": "What turns your speech into actions."
+        },
+        "digitalTwinVoice.listening.enhanceMic": {
+          "type": "boolean",
+          "default": true,
+          "order": 19,
+          "description": "Boost quiet and whispered speech: automatic gain, compression and noise suppression on the microphone before it reaches the speech engine."
         }
       }
     }

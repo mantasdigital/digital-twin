@@ -71,9 +71,35 @@ also available as **Voice: Run Setup Wizard**:
    and confirmation mode.
 3. **Claude Code login** – opens a terminal running `claude` (skipped when the
    account is already the brain).
-4. **Speech engine** – `browser` (free, built-in), `openai` (gpt-4o-transcribe)
-   or `deepgram` (Nova-3). Paid engines get vocabulary hints (terminal and
-   folder names) and are much better on technical words.
+4. **Speech engine** – `server` (built-in Whisper on this server: free, no key,
+   every browser, audio never leaves the server; the default when the image
+   has it), `browser` (free, Chrome/Edge/Safari only, audio goes to the browser
+   vendor), `openai` (gpt-4o-transcribe) or `deepgram` (Nova-3). All but the
+   browser engine get vocabulary hints (terminal and folder names).
+
+## Speech engines
+
+| Engine | Works in | Key | Where audio goes | Notes |
+|--------|----------|-----|------------------|-------|
+| **server** (default) | every browser, phones | none | stays on your server | faster-whisper, int8, model from `DIGITAL_TWIN_STT_MODEL` (default `base`); 1–3 s per command on a Railway vCPU |
+| browser | Chrome, Edge, Safari | none | browser vendor | not available in Perplexity Comet, Brave, Firefox; on-device on Chrome 139+ |
+| openai | every browser | OpenAI | OpenAI | best dictation quality |
+| deepgram | every browser | Deepgram | Deepgram | fast, vocabulary hints |
+
+**Hands-free (wake word)** works with every engine. With the browser engine
+the recognizer listens continuously; with the others the panel keeps the
+microphone open, cuts speech into utterances with its voice detector, and the
+server checks each one for the wake phrase (and runs the command that followed
+it in the same breath). Only the current panel listens; a second device takes
+over when its ear button is pressed.
+
+**Quiet and whispered speech.** The microphone goes through the browser's
+automatic gain control, then a compressor and an adaptive gain stage before it
+reaches the recorder or (Chrome 139+) the recognizer; voice detection adapts
+to the room's noise floor; the level meter under the microphone shows what is
+heard. The built-in engine additionally normalizes the clip. Turn the
+processing off with `listening.enhanceMic` if a studio microphone makes it
+pump.
 
 Everything is editable afterwards in the panel's ⚙ Settings section (also on
 the phone) or in VS Code settings under `digitalTwinVoice.*`.

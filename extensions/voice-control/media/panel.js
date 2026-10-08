@@ -53,7 +53,10 @@
 
   // ------------------------------------------------------------ state
   const state = {
+    provider: "browser",
     sttMode: "browser",
+    vocabulary: [],
+    serverStt: {},
     language: "",
     speakReplies: true,
     listening: {
@@ -122,6 +125,9 @@
         if (msg.start && !hf.armed && mode === "webview") arm()
         else if (!msg.start && hf.armed) disarm()
         break
+      case "wakeResult":
+        onWakeResult(msg)
+        break
     }
   }
 
@@ -134,6 +140,9 @@
     const first = !state.gotState
     state.gotState = true
     state.sttMode = s.sttMode
+    state.provider = s.provider || "browser"
+    state.vocabulary = Array.isArray(s.vocabulary) ? s.vocabulary : []
+    state.serverStt = s.serverStt || {}
     state.language = s.language || ""
     state.speakReplies = s.speakReplies !== false
     state.listening = Object.assign(state.listening, s.listening || {})
@@ -162,11 +171,13 @@
     $("stepClaude").classList.toggle("done", Boolean(setup.claudeLogin))
     $("stepSpeech").classList.toggle("done", Boolean(setup.speechKey))
     const speechDesc = {
-      browser: "browser built-in (free)",
+      server: `built-in on this server${state.serverStt.model ? ` (Whisper ${state.serverStt.model})` : ""}, any browser`,
+      browser: "browser built-in (free, Chrome/Edge/Safari)",
       openai: "OpenAI gpt-4o-transcribe",
       deepgram: "Deepgram Nova-3",
     }
-    $("speechDesc").textContent = speechDesc[s.provider] || s.provider
+    $("speechDesc").textContent =
+      (speechDesc[s.provider] || s.provider) + (s.providerSetting === "auto" ? " · auto" : "")
     $("listeningDesc").textContent =
       state.listening.mode === "wakeWord"
         ? `hands-free, wake phrase "${state.listening.wakePhrase}"`
@@ -174,13 +185,14 @@
     $("btnSpeechKey").classList.toggle("hidden", s.provider === "browser")
     $("setupHint").textContent =
       mode === "remote" ? "Keys and choices are entered in the IDE window; this page follows them." : ""
-    $("modelInfo").textContent = `${s.model} · ${s.provider}`
+    $("modelInfo").textContent = `${s.model} · ${s.provider === "server" ? "built-in stt" : s.provider}`
     renderTerminals(s.terminals || [])
     fillSettings(s)
 
     // Hands-free visibility / ownership
     const wake = state.listening.mode === "wakeWord"
-    $("btnEar").classList.toggle("hidden", !wake || !SR)
+    const canHandsFree = state.sttMode === "record" ? Boolean(navigator.mediaDevices) : Boolean(SR)
+    $("btnEar").classList.toggle("hidden", !wake || !canHandsFree)
     if (hf.armed && state.handsFreeOwner && state.handsFreeOwner !== clientId) disarm(true) // another device took over
     if (!wake && hf.armed) disarm()
     if (wake && first && state.listening.autoStart && mode === "webview" && !state.handsFreeOwner && setup.brainReady)
@@ -226,9 +238,10 @@
       "listening.pauseSeconds": state.listening.pauseSeconds,
       "listening.autoStart": state.listening.autoStart,
       "listening.chime": state.listening.chime,
+      "listening.enhanceMic": state.listening.enhanceMic !== false,
       "confirmation.mode": state.confirmation.mode,
       "confirmation.countdownSeconds": state.confirmation.countdownSeconds,
-      "speech.provider": s.provider,
+      "speech.provider": s.providerSetting || s.provider,
       "speech.language": state.language,
       speakReplies: state.speakReplies,
     }
@@ -507,6 +520,17 @@
         /* ignore */
       }
     }
+    // Contextual biasing (Chrome 139+): favour the wake phrase and our vocabulary.
+    if (window.SpeechRecognitionPhrase && "phrases" in rec) {
+      try {
+        const list = [new SpeechRecognitionPhrase(state.listening.wakePhrase, 4)]
+        for (const a of state.listening.wakeAliases || []) list.push(new SpeechRecognitionPhrase(a, 3))
+        for (const w of (state.vocabulary || []).slice(0, 30)) list.push(new SpeechRecognitionPhrase(w, 1.5))
+        rec.phrases = list
+      } catch (e) {
+        /* ignore */
+      }
+    }
     rec.onresult = onRecResult
     rec.onerror = (e) => {
       if (hf.rec !== rec) return // stale instance
@@ -587,7 +611,13 @@
       }
     }
     try {
-      rec.start()
+      // Modern Chrome accepts a MediaStreamTrack: feed it our processed
+      // (gain-boosted, compressed) audio so quiet speech is heard better.
+      const modern = "processLocally" in rec || "phrases" in rec
+      const track =
+        modern && state.listening.enhanceMic !== false && mic.processed ? mic.processed.getAudioTracks()[0] : null
+      if (track && track.readyState === "live") rec.start(track)
+      else rec.start()
       hf.lastStart = Date.now()
       hf.gotResult = false
       hf.backoff = Math.max(300, Math.min(hf.backoff, 2000))
@@ -685,6 +715,8 @@
     $("micError").classList.add("hidden")
     cap.phase = "capture"
     cap.source = source
+    cap.startedAt = Date.now()
+    cap.spoke = false
     cap.buffer = prefill || ""
     cap.interim = interim || ""
     showHeard(cap.buffer, cap.interim)
@@ -758,9 +790,10 @@
       }
       cap.recorder = null
     }
-    stopVad()
-    if (cap.stream) cap.stream.getTracks().forEach((t) => t.stop())
-    cap.stream = null
+    if (cap.micHeld) {
+      cap.micHeld = false
+      releaseMic()
+    }
     idleStatus()
     startWakeIfNeeded()
   }
@@ -770,30 +803,267 @@
     startWakeIfNeeded()
   }
 
+  // ------------------------------------------------------------ hands-free without a browser recognizer
+  // Server / OpenAI / Deepgram engines: keep the mic open, cut the audio into
+  // utterances with the voice detector, send each one to the server; the
+  // server checks for the wake phrase and either runs the command that
+  // followed it or asks us to capture one.
+  const utt = { recorder: null, chunks: [], startedAt: 0, lastSpeech: 0, inflight: 0 }
+
+  function handsFreeTick(speaking, now) {
+    if (!mic.stream) return
+    if (!utt.recorder) {
+      if (!speaking || utt.inflight > 1) return
+      const source = micStream()
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find(
+        (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m),
+      )
+      try {
+        utt.recorder = new MediaRecorder(source, mime ? { mimeType: mime } : undefined)
+      } catch (e) {
+        return
+      }
+      utt.chunks = []
+      utt.startedAt = now
+      utt.lastSpeech = now
+      utt.recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size) utt.chunks.push(e.data)
+      }
+      utt.recorder.onstop = async () => {
+        const rec = utt.recorder
+        utt.recorder = null
+        const dur = Date.now() - utt.startedAt
+        const blob = new Blob(utt.chunks, { type: (rec && rec.mimeType) || mime || "audio/webm" })
+        if (dur < 700 || blob.size < 2000) return
+        utt.inflight++
+        setStatus("armed", `Heard something, checking for "${state.listening.wakePhrase}"…`)
+        const data = await blobToBase64(blob)
+        post({ type: "audio", mime: blob.type, data, purpose: "wake" })
+      }
+      utt.recorder.start(250)
+      return
+    }
+    if (speaking) utt.lastSpeech = now
+    // the wake phrase plus the command is one utterance: allow a breath, not a pause
+    if (now - utt.lastSpeech > 1200 || now - utt.startedAt > 15000) {
+      try {
+        utt.recorder.stop()
+      } catch (e) {
+        utt.recorder = null
+      }
+    }
+  }
+
+  function onWakeResult(msg) {
+    utt.inflight = Math.max(0, utt.inflight - 1)
+    if (!hf.armed) return
+    if (!msg.matched) {
+      if (msg.error) showError(msg.error)
+      idleStatus()
+      return
+    }
+    if (msg.command) {
+      chime("done")
+      setStatus("busy", "Working…")
+    } else {
+      startCapture("wake", "", "")
+    }
+  }
+
+  async function armRecordMode() {
+    try {
+      await openMic()
+    } catch (err) {
+      micFailure(err)
+      disarm()
+      return
+    }
+    idleStatus()
+  }
+
   // ------------------------------------------------------------ hands-free arm/disarm
   function arm() {
     hf.cooldownUntil = 0
     hf.recognizerBroken = false
     hf.earlyAborts = 0
-    probeOnDevice()
-    if (!SR) {
-      showError("Hands-free needs browser speech recognition (Chrome, Edge or Safari).")
+    unlockAudio()
+    if (state.sttMode === "record") {
+      hf.armed = true
+      $("btnEar").classList.add("on")
+      post({ type: "handsFree", active: true, clientId })
+      armRecordMode()
       return
     }
-    unlockAudio()
+    probeOnDevice()
+    if (!SR) {
+      showError(
+        "Hands-free needs browser speech recognition (Chrome, Edge or Safari), or the built-in server engine in Settings.",
+      )
+      return
+    }
     hf.armed = true
     $("btnEar").classList.add("on")
     post({ type: "handsFree", active: true, clientId })
-    startWakeIfNeeded()
-    idleStatus()
+    const go = () => {
+      startWakeIfNeeded()
+      idleStatus()
+    }
+    const modern = "processLocally" in SR.prototype || "phrases" in SR.prototype
+    if (modern && state.listening.enhanceMic !== false) openMic().then(go, go)
+    else go()
   }
   function disarm(silent) {
     const was = hf.armed
     hf.armed = false
     $("btnEar").classList.remove("on")
+    if (utt.recorder) {
+      utt.recorder.onstop = null
+      try {
+        utt.recorder.stop()
+      } catch (e) {
+        /* ignore */
+      }
+      utt.recorder = null
+    }
+    if (was && mic.stream && cap.phase !== "capture") releaseMic()
     if (was && !silent) post({ type: "handsFree", active: false, clientId })
     startWakeIfNeeded()
     if (cap.phase !== "capture") idleStatus()
+  }
+
+  // ------------------------------------------------------------ microphone front end
+  // One shared microphone stream with: automatic gain control (browser),
+  // compressor + adaptive gain (ours, helps quiet/whispered speech), an
+  // analyser for the level meter and voice detection, and a processed
+  // MediaStream that recorders (and Chrome's recognizer, when it accepts a
+  // track) consume.
+  const mic = {
+    stream: null,
+    processed: null,
+    analyser: null,
+    gain: null,
+    src: null,
+    meter: null,
+    floor: 0.004,
+    rms: 0,
+    speaking: false,
+    lastSpeech: 0,
+    users: 0,
+  }
+
+  async function openMic() {
+    if (mic.stream) {
+      mic.users++
+      return mic
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      throw Object.assign(new Error("no mediaDevices"), { name: "NotSupportedError" })
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    })
+    unlockAudio()
+    mic.stream = stream
+    mic.users = 1
+    if (audioCtx && state.listening.enhanceMic !== false) {
+      try {
+        const src = audioCtx.createMediaStreamSource(stream)
+        const comp = audioCtx.createDynamicsCompressor()
+        comp.threshold.value = -45
+        comp.knee.value = 25
+        comp.ratio.value = 10
+        comp.attack.value = 0.003
+        comp.release.value = 0.25
+        const gain = audioCtx.createGain()
+        gain.gain.value = 2
+        const analyser = audioCtx.createAnalyser()
+        analyser.fftSize = 1024
+        const dest = audioCtx.createMediaStreamDestination()
+        src.connect(comp).connect(gain).connect(analyser).connect(dest)
+        mic.src = src
+        mic.gain = gain
+        mic.analyser = analyser
+        mic.processed = dest.stream
+      } catch (e) {
+        mic.processed = null
+      }
+    }
+    if (!mic.analyser && audioCtx) {
+      try {
+        const src = audioCtx.createMediaStreamSource(stream)
+        const analyser = audioCtx.createAnalyser()
+        analyser.fftSize = 1024
+        src.connect(analyser)
+        mic.src = src
+        mic.analyser = analyser
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    startMeter()
+    return mic
+  }
+
+  function releaseMic() {
+    mic.users = Math.max(0, mic.users - 1)
+    if (mic.users > 0) return
+    closeMic()
+  }
+
+  function closeMic() {
+    stopMeter()
+    try {
+      mic.src && mic.src.disconnect()
+    } catch (e) {
+      /* ignore */
+    }
+    if (mic.stream) mic.stream.getTracks().forEach((t) => t.stop())
+    mic.stream = mic.processed = mic.analyser = mic.gain = mic.src = null
+    mic.users = 0
+    mic.speaking = false
+    $("level").classList.remove("active")
+  }
+
+  /** The stream recorders should use: processed when available, raw otherwise. */
+  function micStream() {
+    return mic.processed || mic.stream
+  }
+
+  // Level meter + adaptive voice detection + adaptive gain. Runs while the mic is open.
+  function startMeter() {
+    if (mic.meter || !mic.analyser) return
+    const buf = new Uint8Array(mic.analyser.fftSize)
+    $("level").classList.add("active")
+    mic.meter = setInterval(() => {
+      if (!mic.analyser) return
+      mic.analyser.getByteTimeDomainData(buf)
+      let sum = 0
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128
+        sum += v * v
+      }
+      const rms = Math.sqrt(sum / buf.length)
+      mic.rms = rms
+      // noise floor: drops quickly, rises slowly
+      mic.floor = rms < mic.floor ? rms : Math.min(mic.floor * 1.01 + 0.00005, 0.05)
+      const threshold = Math.max(0.012, mic.floor * 3.5)
+      const speaking = rms > threshold
+      if (speaking) mic.lastSpeech = Date.now()
+      mic.speaking = speaking
+      $("levelBar").style.width = Math.min(100, Math.round(rms * 400)) + "%"
+      $("levelBar").classList.toggle("speaking", speaking)
+      // adaptive gain: lift soft voices towards a healthy level, back off on loud ones
+      if (mic.gain) {
+        const g = mic.gain.gain.value
+        if (speaking && rms < 0.08 && g < 8) mic.gain.gain.value = Math.min(8, g * 1.08)
+        else if (rms > 0.35 && g > 1) mic.gain.gain.value = Math.max(1, g * 0.85)
+      }
+      onMeterTick(rms, speaking)
+    }, 100)
+  }
+  function stopMeter() {
+    clearInterval(mic.meter)
+    mic.meter = null
+    $("levelBar").style.width = "0%"
   }
 
   // ------------------------------------------------------------ recorder (high-quality STT path)
@@ -811,46 +1081,42 @@
   }
 
   async function startRecorder() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-      showError(
-        'Audio recording is not available here. Use "Open on phone / tablet / new tab", or switch the speech engine to Browser.',
-      )
-      abortCapture()
-      return
-    }
     try {
-      cap.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      })
+      await openMic()
     } catch (err) {
       micFailure(err)
       abortCapture()
       return
     }
     if (cap.phase !== "capture") {
-      cap.stream.getTracks().forEach((t) => t.stop())
+      releaseMic()
       return
     }
-    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((m) =>
-      MediaRecorder.isTypeSupported(m),
+    const source = micStream()
+    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find(
+      (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m),
     )
     const chunks = []
     try {
-      cap.recorder = new MediaRecorder(cap.stream, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined)
+      cap.recorder = new MediaRecorder(source, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined)
     } catch (err) {
       micFailure(err)
+      releaseMic()
       abortCapture()
       return
     }
+    cap.micHeld = true
+    cap.spoke = false
     cap.recorder.ondataavailable = (e) => {
       if (e.data && e.data.size) chunks.push(e.data)
     }
     cap.recorder.onstop = async () => {
       const rec = cap.recorder
       cap.recorder = null
-      stopVad()
-      if (cap.stream) cap.stream.getTracks().forEach((t) => t.stop())
-      cap.stream = null
+      if (cap.micHeld) {
+        cap.micHeld = false
+        releaseMic()
+      }
       const blob = new Blob(chunks, { type: (rec && rec.mimeType) || mime || "audio/webm" })
       if (blob.size < 1000) {
         idleStatus("Too short")
@@ -859,10 +1125,9 @@
       chime("done")
       setStatus("busy", "Uploading…")
       const data = await blobToBase64(blob)
-      post({ type: "audio", mime: blob.type, data, hint: cap.lastHint || "" })
+      post({ type: "audio", mime: blob.type, data, hint: cap.lastHint || "", purpose: "command" })
     }
     cap.recorder.start(250)
-    startVad(cap.stream) // energy-based pause detection, works without SpeechRecognition (Firefox)
   }
   function stopRecorder(hintText) {
     cap.lastHint = hintText || ""
@@ -873,42 +1138,23 @@
     }
   }
 
-  function startVad(stream) {
-    if (!audioCtx) return
-    try {
-      const src = audioCtx.createMediaStreamSource(stream)
-      const analyser = audioCtx.createAnalyser()
-      analyser.fftSize = 1024
-      src.connect(analyser)
-      const buf = new Uint8Array(analyser.fftSize)
-      let spoke = false
-      cap.vad = setInterval(() => {
-        analyser.getByteTimeDomainData(buf)
-        let sum = 0
-        for (let i = 0; i < buf.length; i++) {
-          const v = (buf[i] - 128) / 128
-          sum += v * v
-        }
-        const rms = Math.sqrt(sum / buf.length)
-        if (rms > 0.03) {
-          spoke = true
-          resetSilence()
-        } else if (!spoke) resetSilence() // keep waiting while the user has not started yet
-      }, 150)
-      cap.vadNodes = { src, analyser }
-    } catch (e) {
-      /* ignore */
+  /** Voice detection is driven by the shared meter; this hook ends a command on silence. */
+  function onMeterTick(rms, speaking) {
+    const now = Date.now()
+    if (cap.phase === "capture" && state.sttMode === "record") {
+      if (speaking) {
+        cap.spoke = true
+        resetSilence()
+      } else if (!cap.spoke && now - cap.startedAt < 12000) {
+        resetSilence() // still waiting for the first word
+      }
+    }
+    if (hf.armed && state.sttMode === "record" && cap.phase !== "capture" && !state.busy && !ttsSpeaking) {
+      handsFreeTick(speaking, now)
     }
   }
   function stopVad() {
-    clearInterval(cap.vad)
-    cap.vad = null
-    try {
-      cap.vadNodes && cap.vadNodes.src.disconnect()
-    } catch (e) {
-      /* ignore */
-    }
-    cap.vadNodes = null
+    /* voice detection lives in the shared meter now; kept for call sites */
   }
 
   function blobToBase64(blob) {
@@ -974,6 +1220,7 @@
   })
   if (isIOS) $("hint").textContent += " On iPhone/iPad keep this page open; the screen lock stops the microphone."
 
+  window.__dtvPost = post // test hook: headless checks push real audio through the whole pipeline
   if (mode === "webview") post({ type: "ready", clientId, kind: "webview", ua: navigator.userAgent })
   post({
     type: "log",
