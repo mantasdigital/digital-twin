@@ -153,24 +153,16 @@ COPY --from=builder /qr-layout/qrcode /usr/lib/code-server/node_modules/qrcode
 # Stock VS Code never grants `microphone` to webview iframes, so the Voice
 # Control side panel could not hear anything. Add it to the allow-list of both
 # the webview host iframe (workbench bundle) and the inner content iframe
-# (pre/index.html). The patterns are exact array literals; if a future
-# code-server bump changes them the build warns instead of failing, and the
-# extension's "open in a browser tab" fallback still works.
+# (pre/index.html). The inner page's inline script is pinned by a CSP hash,
+# so the script recomputes it after editing — otherwise every webview breaks.
+# If a future code-server bump changes the patterns the build warns instead
+# of failing, and the extension's "open in a browser tab" fallback still works.
 # ============================================================================
 
 COPY --from=voice-builder /ext/digital-twin-voice-*.vsix /opt/digital-twin/extensions/
 
-RUN set -e; \
-    PRE=/usr/lib/code-server/lib/vscode/out/vs/workbench/contrib/webview/browser/pre/index.html; \
-    WB=/usr/lib/code-server/lib/vscode/out/vs/workbench/workbench.web.main.internal.js; \
-    if grep -q "\['cross-origin-isolated;', 'autoplay;', 'local-network-access;'\]" "$PRE"; then \
-        sed -i "s/\['cross-origin-isolated;', 'autoplay;', 'local-network-access;'\]/['cross-origin-isolated;', 'autoplay;', 'local-network-access;', 'microphone;']/" "$PRE" \
-        && echo "Webview content iframe: microphone allowed"; \
-    else echo "WARNING: webview pre/index.html allow-list pattern not found; microphone in side panel may not work"; fi; \
-    if grep -q '\["cross-origin-isolated","autoplay","local-network-access"\]' "$WB"; then \
-        sed -i 's/\["cross-origin-isolated","autoplay","local-network-access"\]/["cross-origin-isolated","autoplay","local-network-access","microphone"]/' "$WB" \
-        && echo "Webview host iframe: microphone allowed"; \
-    else echo "WARNING: workbench webview allow-list pattern not found; microphone in side panel may not work"; fi
+COPY scripts/patch-webview-microphone.py /opt/digital-twin/patch-webview-microphone.py
+RUN python3 /opt/digital-twin/patch-webview-microphone.py /usr/lib/code-server || echo "WARNING: webview microphone patch incomplete (see above)"
 
 # ============================================================================
 # CLAUDE CODE CLI INSTALLATION
