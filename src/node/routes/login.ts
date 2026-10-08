@@ -11,6 +11,7 @@ import { getClientIp } from "../ipBan"
 import { sendMail } from "../mailer"
 import { issueSessionToken, totpUri } from "../twoFactor"
 import { getPasswordMethod, handlePasswordValidation, sanitizeString, escapeHtml } from "../util"
+import { voiceControlShipped } from "./voiceSetup"
 
 // RateLimiter wraps around the limiter library for logins.
 // It allows 2 logins every minute plus 12 logins every hour.
@@ -232,6 +233,12 @@ router.post<{}, string, LoginBody | undefined, { to?: string }>("/", async (req,
       req.ipBan.audit("setup_complete", clientIp)
       const totpSecret = await req.twoFactor.getSecret()
       res.cookie(req.cookieSessionName, issueSessionToken(totpSecret!), getCookieOptions(req))
+      // First sign-in on this instance: let the user pick their Voice Control
+      // defaults (on/off, push-to-talk vs wake word, Claude account vs API
+      // key) before the IDE opens.  The page keeps `to` and continues there.
+      if (voiceControlShipped()) {
+        return redirect(req, res, "/voice-setup", { to })
+      }
       return redirect(req, res, to, { to: undefined })
     } catch (error: any) {
       // Without a pending secret the setup page cannot be rendered again;

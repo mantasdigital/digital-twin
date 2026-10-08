@@ -43,16 +43,34 @@ pause always works, with or without an end word.
 Destructive commands (`rm -rf`, `sudo`, force-push, closing windows, …) always
 require an explicit yes regardless of the mode.
 
-## Setup (first run)
+## What understands you ("brain")
 
-The side panel (microphone icon in the activity bar) runs a 4-step wizard,
+| Option | How | Speed | Cost |
+|--------|-----|-------|------|
+| **Claude account** | Runs Claude Code headless (`claude -p`, no tools, JSON schema output) with the same login as the terminal | ~3–5 s | included in the subscription |
+| **Anthropic API key** | Messages API with strict tools | ~1–2 s | per use |
+| **Auto** (default) | API key if one is set, otherwise the Claude account | | |
+
+Setting: `digitalTwinVoice.brain`. The Claude-account path needs `claude`
+logged in once (run it in a terminal); the panel notices when the login lands.
+
+## Setup
+
+**Right after two-factor enrollment** the server shows a one-page "Voice
+Control" form (on/off, push-to-talk or wake word, Claude account or API key).
+It writes `~/.config/code-server/voice-control-seed.json`; the extension
+applies it on its next activation, moves any key into SecretStorage and
+deletes the file. Also reachable later at `/voice-setup`.
+
+**Existing users** get a 4-step wizard in the side panel (microphone icon),
 also available as **Voice: Run Setup Wizard**:
 
-1. **Anthropic API key** – required; validated and stored in VS Code
-   SecretStorage on the server. Or set `ANTHROPIC_API_KEY` as a Railway variable.
+1. **What understands you** – Claude account or Anthropic API key (validated,
+   stored in SecretStorage; or set `ANTHROPIC_API_KEY` as a Railway variable).
 2. **Listening** – push-to-talk or wake word; wake phrase, optional end word
    and confirmation mode.
-3. **Claude Code login** – opens a terminal running `claude`.
+3. **Claude Code login** – opens a terminal running `claude` (skipped when the
+   account is already the brain).
 4. **Speech engine** – `browser` (free, built-in), `openai` (gpt-4o-transcribe)
    or `deepgram` (Nova-3). Paid engines get vocabulary hints (terminal and
    folder names) and are much better on technical words.
@@ -102,9 +120,12 @@ the same way.
    Voice Control; `ANTHROPIC_API_KEY` to pre-configure it.
 3. Tell users the feature is opt-in: it does nothing until the wizard runs, and
    wake-word mode is never on by default.
-4. Smoke-test the intent layer with your key:
-   `ANTHROPIC_API_KEY=… node scripts/smoke-intent.mjs "open a terminal in src"`.
-5. On the first real deployment, test: push-to-talk in Chrome, wake word, a
+4. Smoke-test the intent layer: `node scripts/smoke-intent.mjs --claude "open a
+   terminal in src"` (Claude account) or with `ANTHROPIC_API_KEY=…` (API key).
+5. **Before redeploying any existing server**, run
+   `scripts/rescue-ephemeral-home.sh` inside it (see the root README,
+   "Upgrading an existing server"), or its Claude login and history are lost.
+6. On the first real deployment, test: push-to-talk in Chrome, wake word, a
    destructive command (must ask), "stop listening", and the phone remote.
 
 ## Development

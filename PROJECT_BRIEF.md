@@ -78,3 +78,5 @@ $HOME/.claude/local       <- Claude Code from volume
 | `railway.toml` | Railway deployment config |
 | `README.md` | User documentation |
 | `extensions/voice-control/` | Voice Control extension source (built into a VSIX by the Dockerfile, installed on boot by the entrypoint) |
+| `src/node/routes/voiceSetup.ts` | Post-2FA per-user Voice Control defaults page (`/voice-setup`), writes a seed the extension consumes |
+| `scripts/rescue-ephemeral-home.sh` | One-time rescue of data written to the ephemeral layer on legacy deployments; run inside the container before redeploy |

@@ -1,0 +1,44 @@
+.voice-form fieldset {
+  border: 1px solid #ddd;
+  border: 1px solid light-dark(#ddd, #4b5563);
+  border-radius: 8px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.voice-form legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.voice-form label {
+  display: block;
+  margin: 6px 0;
+  cursor: pointer;
+}
+
+.voice-form .indent {
+  margin: 8px 0 0 24px;
+}
+
+.voice-form .indent input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.voice-form .note {
+  margin-top: 6px;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.voice-form .actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.voice-form .secondary {
+  opacity: 0.7;
+}

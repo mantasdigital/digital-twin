@@ -255,6 +255,22 @@
           "maximum": 30,
           "order": 21,
           "description": "Countdown length for the countdown confirmation mode."
+        },
+        "digitalTwinVoice.brain": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "claudeAccount",
+            "apiKey"
+          ],
+          "order": 1,
+          "enumDescriptions": [
+            "Use an Anthropic API key if one is set, otherwise your Claude account (Claude Code login).",
+            "Your Claude account: the same login the `claude` terminal command uses. No API key. About 3 s per command.",
+            "Anthropic API key via the Messages API. Fastest (about 1-2 s), billed per use."
+          ],
+          "description": "What turns your speech into actions."
         }
       }
     }

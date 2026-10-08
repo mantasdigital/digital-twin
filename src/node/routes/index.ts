@@ -27,6 +27,7 @@ import * as pathProxy from "./pathProxy"
 import * as security from "./security"
 import * as unban from "./unban"
 import * as update from "./update"
+import * as voiceSetup from "./voiceSetup"
 import * as vscode from "./vscode"
 
 /**
@@ -174,6 +175,7 @@ export const register = async (
     app.router.use("/logout", logout.router)
     app.router.use("/unban", unban.router)
     app.router.use("/security", security.router)
+    app.router.use("/voice-setup", voiceSetup.router)
   } else {
     app.router.all("/login", (req, res) => redirect(req, res, "/", {}))
     app.router.all("/logout", (req, res) => redirect(req, res, "/", {}))

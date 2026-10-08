@@ -266,8 +266,9 @@ ${remoteHead}
     <p class="muted">Takes a minute. Keys stay on your server.</p>
     <ol class="steps">
       <li id="stepAnthropic"><span class="check"></span>
-        <div><b>Anthropic API key</b> <span class="muted">turns what you say into actions</span></div>
-        <button data-setup="anthropicKey">Enter key</button></li>
+        <div><b>What understands you</b> <span class="muted" id="brainDesc">Claude account (like the terminal) or an API key</span></div>
+        <button data-setup="claudeAccount">Claude account</button>
+        <button data-setup="anthropicKey">API key</button></li>
       <li id="stepListening"><span class="check"></span>
         <div><b>Listening</b> <span class="muted" id="listeningDesc"></span></div>
         <button data-setup="listening">Choose</button></li>
@@ -317,6 +318,7 @@ ${remoteHead}
   <section class="card hidden" id="settingsCard">
     <div class="label">Settings</div>
     <div class="grid">
+      <label>Understands you with <select data-setting="brain"><option value="auto">Auto (key if set, else Claude account)</option><option value="claudeAccount">My Claude account (terminal login)</option><option value="apiKey">Anthropic API key</option></select></label>
       <label>Listening <select data-setting="listening.mode"><option value="pushToTalk">Push-to-talk</option><option value="wakeWord">Wake word (hands-free)</option></select></label>
       <label>Wake phrase <input data-setting="listening.wakePhrase" type="text" placeholder="Hey Twin"></label>
       <label>End word (optional) <input data-setting="listening.endWord" type="text" placeholder="e.g. over"></label>
@@ -332,6 +334,7 @@ ${remoteHead}
     <div class="row">
       <button data-setup="speechKey">Speech API key</button>
       <button data-setup="anthropicKey">Anthropic key</button>
+      <button data-setup="claudeAccount">Claude login</button>
       <button id="btnAllSettings">All settings…</button>
     </div>
     <p class="muted small">Destructive commands always ask. The wake-word listener uses your browser's speech recognition; on Chrome 139+ it runs on-device when available.</p>

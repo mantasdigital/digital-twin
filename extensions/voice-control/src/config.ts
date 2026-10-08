@@ -6,6 +6,8 @@ import * as vscode from "vscode"
 export type SpeechProvider = "browser" | "openai" | "deepgram"
 export type ListeningMode = "pushToTalk" | "wakeWord"
 export type ConfirmationMode = "ask" | "countdown" | "auto"
+/** What turns speech into actions: the Messages API with a key, or the user's Claude account via headless Claude Code. */
+export type Brain = "auto" | "claudeAccount" | "apiKey"
 
 export const SECRET_ANTHROPIC = "digitalTwinVoice.anthropicApiKey"
 export const SECRET_OPENAI = "digitalTwinVoice.openaiApiKey"
@@ -13,6 +15,7 @@ export const SECRET_DEEPGRAM = "digitalTwinVoice.deepgramApiKey"
 
 export interface Settings {
   enabled: boolean
+  brain: Brain
   model: string
   provider: SpeechProvider
   language: string
@@ -38,6 +41,7 @@ export function settings(): Settings {
   const c = vscode.workspace.getConfiguration("digitalTwinVoice")
   return {
     enabled: c.get<boolean>("enabled", true),
+    brain: c.get<Brain>("brain", "auto"),
     model: c.get<string>("model", "claude-opus-5-5"),
     provider: c.get<SpeechProvider>("speech.provider", "browser"),
     language: c.get<string>("speech.language", "").trim(),
@@ -62,6 +66,7 @@ export function settings(): Settings {
 
 /** Settings the panel UI (including the phone remote) may change. */
 export const EDITABLE_SETTINGS: Record<string, (v: unknown) => unknown | undefined> = {
+  brain: (v) => (v === "auto" || v === "claudeAccount" || v === "apiKey" ? v : undefined),
   "listening.mode": (v) => (v === "pushToTalk" || v === "wakeWord" ? v : undefined),
   "listening.wakePhrase": (v) => (typeof v === "string" && v.trim().length >= 3 ? v.trim().slice(0, 40) : undefined),
   "listening.wakeAliases": (v) =>
@@ -148,14 +153,37 @@ export function claudeCodeLoggedIn(): boolean {
   }
 }
 
-export function claudeCodeInstalled(): boolean {
+export function findClaudeBinary(): string | undefined {
   const candidates = [
     path.join(os.homedir(), ".local", "bin", "claude"),
     path.join(os.homedir(), ".claude", "local", "claude"),
     "/usr/local/bin/claude",
     "/usr/bin/claude",
   ]
-  if (candidates.some((p) => fs.existsSync(p))) return true
-  const dirs = (process.env.PATH || "").split(path.delimiter)
-  return dirs.some((d) => d && fs.existsSync(path.join(d, "claude")))
+  for (const d of (process.env.PATH || "").split(path.delimiter)) if (d) candidates.push(path.join(d, "claude"))
+  return candidates.find((p) => fs.existsSync(p))
+}
+
+export function claudeCodeInstalled(): boolean {
+  return Boolean(findClaudeBinary())
+}
+
+/**
+ * Defaults chosen on the server's post-2FA "Voice Control" page. Written by
+ * the Digital Twin server into the code-server config dir; consumed once.
+ */
+export interface VoiceSeed {
+  version: number
+  enabled?: boolean
+  listeningMode?: "pushToTalk" | "wakeWord"
+  wakePhrase?: string
+  brain?: "claudeAccount" | "apiKey"
+  anthropicApiKey?: string
+}
+
+export function seedFileCandidates(): string[] {
+  const xdg = process.env.XDG_CONFIG_HOME
+  const out = [path.join(os.homedir(), ".config", "code-server", "voice-control-seed.json")]
+  if (xdg) out.unshift(path.join(xdg, "code-server", "voice-control-seed.json"))
+  return out
 }

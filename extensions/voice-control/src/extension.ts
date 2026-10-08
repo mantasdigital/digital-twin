@@ -1,18 +1,22 @@
 import Anthropic from "@anthropic-ai/sdk"
+import * as fs from "fs"
 import * as vscode from "vscode"
 import { describe, execute, isDangerous } from "./actions"
 import {
   claudeCodeInstalled,
   claudeCodeLoggedIn,
+  findClaudeBinary,
   Keys,
   SECRET_ANTHROPIC,
   SECRET_DEEPGRAM,
   SECRET_OPENAI,
+  seedFileCandidates,
   settings,
   SpeechProvider,
   updateSetting,
+  VoiceSeed,
 } from "./config"
-import { Action, interpret } from "./intent"
+import { Action, interpret, interpretViaClaudeCode } from "./intent"
 import { ClientMessage, PanelViewProvider, RemoteServer } from "./panel"
 import { transcribe } from "./stt"
 import { buildContext, snapshotTree, TerminalRegistry, vocabulary } from "./workspace"
@@ -67,6 +71,74 @@ class VoiceController {
       }),
       { dispose: () => this.remote.dispose() },
     )
+  }
+
+  // ---------------------------------------------------------------- brain
+
+  /** Which engine understands the user right now, or undefined if none is ready. */
+  private async resolveBrain(): Promise<"apiKey" | "claudeAccount" | undefined> {
+    const s = settings()
+    const key = await this.keys.anthropic()
+    const account = claudeCodeInstalled() && claudeCodeLoggedIn()
+    if (s.brain === "apiKey") return key ? "apiKey" : undefined
+    if (s.brain === "claudeAccount") return account ? "claudeAccount" : undefined
+    return key ? "apiKey" : account ? "claudeAccount" : undefined
+  }
+
+  /** Apply defaults chosen on the server's post-2FA page, once. */
+  private async applySeed(): Promise<void> {
+    for (const file of seedFileCandidates()) {
+      let seed: VoiceSeed
+      try {
+        seed = JSON.parse(fs.readFileSync(file, "utf8"))
+      } catch {
+        continue
+      }
+      try {
+        if (typeof seed.enabled === "boolean") {
+          await vscode.workspace
+            .getConfiguration("digitalTwinVoice")
+            .update("enabled", seed.enabled, vscode.ConfigurationTarget.Global)
+        }
+        if (seed.listeningMode) await updateSetting("listening.mode", seed.listeningMode)
+        if (seed.wakePhrase) await updateSetting("listening.wakePhrase", seed.wakePhrase)
+        if (seed.brain) await updateSetting("brain", seed.brain)
+        if (seed.anthropicApiKey && seed.anthropicApiKey.startsWith("sk-ant-"))
+          await this.keys.set(SECRET_ANTHROPIC, seed.anthropicApiKey)
+        await this.context.globalState.update("digitalTwinVoice.listeningChosen", true)
+        await this.context.globalState.update(FIRST_RUN_KEY, true)
+        this.output.appendLine(`[setup] applied defaults from ${file}`)
+      } finally {
+        try {
+          fs.unlinkSync(file) // the key must not linger on disk
+        } catch {
+          // ignore
+        }
+      }
+      if (seed.brain === "claudeAccount" && settings().enabled && !claudeCodeLoggedIn()) {
+        const choice = await vscode.window.showInformationMessage(
+          "Voice Control will use your Claude account. Log in once by running `claude` in a terminal.",
+          "Log in now",
+          "Later",
+        )
+        if (choice === "Log in now") await this.claudeLogin()
+      }
+      return
+    }
+  }
+
+  private loginPoll: NodeJS.Timeout | undefined
+  /** After "Log in" was opened in a terminal, notice when the credentials appear. */
+  private watchForLogin(): void {
+    clearInterval(this.loginPoll)
+    const started = Date.now()
+    this.loginPoll = setInterval(() => {
+      if (claudeCodeLoggedIn()) {
+        clearInterval(this.loginPoll)
+        void this.sendState()
+        vscode.window.showInformationMessage("Claude Code is logged in. Voice Control can use your Claude account now.")
+      } else if (Date.now() - started > 10 * 60_000) clearInterval(this.loginPoll)
+    }, 3000)
   }
 
   // ---------------------------------------------------------------- transport
@@ -132,9 +204,12 @@ class VoiceController {
     const anthropic = Boolean(await this.keys.anthropic())
     const speechKey = s.provider === "browser" ? true : Boolean(await this.keys.speech(s.provider))
     const listeningChosen = this.context.globalState.get<boolean>("digitalTwinVoice.listeningChosen", false)
+    const brain = await this.resolveBrain()
     this.broadcast({
       type: "state",
       enabled: s.enabled,
+      brain: s.brain,
+      brainActive: brain ?? null,
       model: s.model,
       provider: s.provider,
       sttMode: s.provider === "browser" ? "browser" : "record",
@@ -154,11 +229,12 @@ class VoiceController {
       confirmation: { mode: s.confirmationMode, countdownSeconds: s.countdownSeconds },
       setup: {
         anthropic,
+        brainReady: Boolean(brain),
         listeningChosen,
         claudeLogin: claudeCodeLoggedIn(),
         claudeInstalled: claudeCodeInstalled(),
         speechKey,
-        complete: anthropic && speechKey && listeningChosen,
+        complete: Boolean(brain) && speechKey && listeningChosen,
       },
       terminals: this.registry.list(),
       recording: this.recording,
@@ -247,7 +323,12 @@ class VoiceController {
   private async handleSetup(action: string): Promise<void> {
     switch (action) {
       case "anthropicKey":
+        await updateSetting("brain", "apiKey")
         await this.setAnthropicKey()
+        break
+      case "claudeAccount":
+        await updateSetting("brain", "claudeAccount")
+        if (!claudeCodeLoggedIn()) await this.claudeLogin()
         break
       case "speechKey":
         await this.setSpeechKey()
@@ -271,12 +352,35 @@ class VoiceController {
   /** Guided first-run flow: key → listening → Claude login → speech engine. */
   async runWizard(): Promise<void> {
     await this.panel.reveal()
-    if (!(await this.keys.anthropic())) {
-      await this.setAnthropicKey()
-      if (!(await this.keys.anthropic())) return
+    if (!(await this.resolveBrain())) {
+      const pick = await vscode.window.showQuickPick(
+        [
+          {
+            label: "$(account) Use my Claude account",
+            description: "same login as the claude terminal command, no API key",
+            detail: "Runs Claude Code headless for each command (about 3 seconds). You log in once in a terminal.",
+            id: "claudeAccount",
+          },
+          {
+            label: "$(key) Use an Anthropic API key",
+            description: "fastest, billed per use",
+            detail: "Calls the Messages API directly (1-2 seconds). Key is stored encrypted on this server.",
+            id: "apiKey",
+          },
+        ],
+        { title: "Step 1 of 4 · What should understand you?", ignoreFocusOut: true },
+      )
+      if (!pick) return
+      await updateSetting("brain", pick.id)
+      if (pick.id === "apiKey") {
+        await this.setAnthropicKey()
+        if (!(await this.keys.anthropic())) return
+      } else if (!claudeCodeLoggedIn()) {
+        await this.claudeLogin()
+      }
     }
     await this.chooseListening()
-    if (!claudeCodeLoggedIn()) {
+    if (settings().brain === "apiKey" && !claudeCodeLoggedIn()) {
       const pick = await vscode.window.showQuickPick(
         [
           { label: "Log in now", description: "opens Claude Code in a terminal; follow its prompt", id: "login" },
@@ -430,6 +534,7 @@ class VoiceController {
     const { terminal } = this.registry.findOrCreate("Claude")
     terminal.show(false)
     terminal.sendText("claude", true)
+    this.watchForLogin()
     vscode.window.showInformationMessage(
       'Claude Code opened in the "Claude" terminal. Follow its login prompt (or paste an API key). Voice commands like "ask Claude to …" will go there.',
     )
@@ -447,11 +552,16 @@ class VoiceController {
     }
   }
 
+  async start(): Promise<void> {
+    await this.applySeed()
+    await this.maybeShowFirstRun()
+  }
+
   async maybeShowFirstRun(): Promise<void> {
     if (!settings().enabled) return
     if (this.context.globalState.get<boolean>(FIRST_RUN_KEY)) return
     await this.context.globalState.update(FIRST_RUN_KEY, true)
-    if (await this.keys.anthropic()) return
+    if (await this.resolveBrain()) return
     const choice = await vscode.window.showInformationMessage(
       "Voice Control is installed: talk to your Digital Twin to open terminals, run commands and hand tasks to Claude Code. It stays silent until you set it up.",
       "Set up now",
@@ -539,22 +649,27 @@ class VoiceController {
       this.broadcast({ type: "error", message: "Still working on the previous request." })
       return
     }
-    const apiKey = await this.keys.anthropic()
-    if (!apiKey) {
-      this.broadcast({ type: "error", message: "Add your Anthropic API key first (Settings → Anthropic key)." })
+    const brain = await this.resolveBrain()
+    if (!brain) {
+      this.broadcast({
+        type: "error",
+        message:
+          s.brain === "claudeAccount"
+            ? "Claude Code is not logged in yet. Run `claude` in a terminal and sign in (Settings → Claude login)."
+            : "Nothing can understand you yet: log in to your Claude account or add an Anthropic API key (Settings).",
+      })
       return
     }
     this.busy = true
     try {
-      this.phase("thinking", "Thinking…")
+      this.phase("thinking", brain === "claudeAccount" ? "Asking Claude (your account)…" : "Thinking…")
       const tree = await snapshotTree()
       this.output.appendLine(`[you] ${text}`)
-      const result = await interpret({
-        apiKey,
-        model: s.model,
-        transcript: text,
-        context: buildContext(this.registry, tree),
-      })
+      const context = buildContext(this.registry, tree)
+      const result =
+        brain === "apiKey"
+          ? await interpret({ apiKey: (await this.keys.anthropic())!, model: s.model, transcript: text, context })
+          : await interpretViaClaudeCode({ claudePath: findClaudeBinary()!, model: s.model, transcript: text, context })
       this.output.appendLine(`[claude] ${JSON.stringify(result)}`)
       const items = result.actions.map((a) => ({ label: describe(a), dangerous: isDangerous(a) }))
       const dangerous = s.confirmDangerous && items.some((i) => i.dangerous)
@@ -665,7 +780,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("digitalTwinVoice.claudeLogin", () => controller.claudeLogin()),
     vscode.commands.registerCommand("digitalTwinVoice.clearKeys", () => controller.clearKeys()),
   )
-  void controller.maybeShowFirstRun()
+  void controller.start()
 }
 
 export function deactivate(): void {

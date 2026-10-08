@@ -1,4 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { execFile } from "child_process"
+import * as os from "os"
 
 export interface Action {
   tool: string
@@ -195,4 +197,149 @@ export async function interpret(opts: InterpretOptions): Promise<IntentResult> {
   if (!say && texts.length) say = texts.join(" ").slice(0, 300)
   if (!actions.length && !say) say = "Sorry, I didn't catch that."
   return { actions, say }
+}
+
+// ---------------------------------------------------------------------------
+// Claude account path: run Claude Code headless. It uses the same login as the
+// `claude` terminal command, so no API key is needed. All tools are disabled
+// and the answer is constrained to a JSON schema; we execute the actions.
+// ---------------------------------------------------------------------------
+
+const TOOL_NAMES = new Set(TOOLS.map((t) => (t as Anthropic.Beta.BetaTool).name))
+
+function toolCatalog(): string {
+  return TOOLS.map((t) => {
+    const tool = t as Anthropic.Beta.BetaTool
+    const props = (tool.input_schema as any).properties as Record<
+      string,
+      { description?: string; enum?: string[]; type?: string }
+    >
+    const inputs = Object.entries(props)
+      .map(([k, v]) => `${k} (${v.type}${v.enum ? ": " + v.enum.join("|") : ""}) - ${v.description ?? ""}`)
+      .join("; ")
+    return `- ${tool.name}: ${tool.description}\n    inputs: ${inputs}`
+  }).join("\n")
+}
+
+const CLAUDE_CODE_SCHEMA = {
+  type: "object",
+  properties: {
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { tool: { type: "string" }, input: { type: "object" } },
+        required: ["tool", "input"],
+      },
+    },
+    say: { type: "string" },
+  },
+  required: ["actions", "say"],
+}
+
+function modelAlias(model: string): string {
+  if (/haiku/.test(model)) return "haiku"
+  if (/sonnet/.test(model)) return "sonnet"
+  if (/opus/.test(model)) return "opus"
+  return model
+}
+
+export interface ClaudeCodeOptions {
+  claudePath: string
+  model: string
+  transcript: string
+  context: string
+}
+
+export async function interpretViaClaudeCode(opts: ClaudeCodeOptions): Promise<IntentResult> {
+  const system =
+    SYSTEM +
+    '\n\nYou answer ONLY with JSON matching the schema: {"actions": [{"tool", "input"}...], "say": string}. ' +
+    'Put IDE actions in "actions" in the order they should run, with every input field present (use "", false or 0 when not applicable). ' +
+    'Put anything to tell the user in "say" (empty string if nothing). Never put "say" inside actions.\n\nAvailable actions:\n' +
+    toolCatalog()
+  const prompt = `<context>\n${opts.context}\n</context>\n\n<transcript>\n${opts.transcript}\n</transcript>`
+  const args = [
+    "-p",
+    prompt,
+    "--output-format",
+    "json",
+    "--json-schema",
+    JSON.stringify(CLAUDE_CODE_SCHEMA),
+    "--tools",
+    "",
+    "--no-session-persistence",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--max-turns",
+    "1",
+    "--model",
+    modelAlias(opts.model),
+    "--system-prompt",
+    system,
+  ]
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile(
+      opts.claudePath,
+      args,
+      {
+        cwd: os.tmpdir(),
+        timeout: 90_000,
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      },
+      (err, out, errOut) => {
+        if (err && !out) reject(new Error(`Claude Code failed: ${(errOut || err.message).toString().slice(0, 300)}`))
+        else resolve(out.toString())
+      },
+    )
+  })
+  let envelope: any
+  try {
+    envelope = JSON.parse(stdout)
+  } catch {
+    throw new Error(`Claude Code returned unexpected output: ${stdout.slice(0, 200)}`)
+  }
+  if (envelope.is_error) {
+    const msg = String(envelope.result || "unknown error")
+    if (/log ?in|auth|credential|token/i.test(msg))
+      throw new Error("Claude Code is not logged in. Run `claude` in a terminal and sign in, or add an API key.")
+    throw new Error(`Claude Code: ${msg.slice(0, 300)}`)
+  }
+  let parsed: any = envelope.structured_output
+  if (!parsed && typeof envelope.result === "string") {
+    try {
+      parsed = JSON.parse(envelope.result)
+    } catch {
+      return { actions: [], say: envelope.result.slice(0, 300) }
+    }
+  }
+  const actions: Action[] = []
+  for (const raw of Array.isArray(parsed?.actions) ? parsed.actions : []) {
+    if (!raw || typeof raw.tool !== "string") continue
+    if (raw.tool === "say") continue
+    if (!TOOL_NAMES.has(raw.tool)) continue
+    actions.push({ tool: raw.tool, input: fillDefaults(raw.tool, raw.input) })
+  }
+  const say = typeof parsed?.say === "string" && parsed.say.trim() ? parsed.say.trim().slice(0, 300) : undefined
+  if (!actions.length && !say) return { actions: [], say: "Sorry, I didn't catch that." }
+  return { actions, say }
+}
+
+/** Make a loosely-typed input match the strict schema the executor expects. */
+function fillDefaults(toolName: string, input: unknown): Record<string, any> {
+  const tool = TOOLS.find((t) => (t as Anthropic.Beta.BetaTool).name === toolName) as
+    | Anthropic.Beta.BetaTool
+    | undefined
+  const props = ((tool?.input_schema as any)?.properties ?? {}) as Record<string, { type?: string }>
+  const src = (input && typeof input === "object" ? input : {}) as Record<string, any>
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(props)) {
+    const val = src[k]
+    if (v.type === "boolean") out[k] = typeof val === "boolean" ? val : String(val).toLowerCase() === "true"
+    else if (v.type === "integer") out[k] = Number.isFinite(Number(val)) ? Math.trunc(Number(val)) : 0
+    else out[k] = val === undefined || val === null ? "" : String(val)
+  }
+  return out
 }

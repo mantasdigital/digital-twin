@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no"
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="style-src 'self'; script-src 'self' 'unsafe-inline'; manifest-src 'self'; img-src 'self' data:; font-src 'self' data:;"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>{{I18N_VOICE_TITLE}}</title>
+    <link rel="icon" href="{{CS_STATIC_BASE}}/src/browser/media/favicon-dark-support.svg" />
+    <link rel="alternate icon" href="{{CS_STATIC_BASE}}/src/browser/media/favicon.ico" />
+    <link href="{{CS_STATIC_BASE}}/src/browser/pages/global.css" rel="stylesheet" />
+    <link href="{{CS_STATIC_BASE}}/src/browser/pages/login.css" rel="stylesheet" />
+    <link href="{{CS_STATIC_BASE}}/src/browser/pages/voice-setup.css" rel="stylesheet" />
+    <meta id="coder-options" data-settings="{{OPTIONS}}" />
+  </head>
+  <body>
+    <div class="center-container">
+      <div class="card-box">
+        <div class="header">
+          <h1 class="main">{{I18N_VOICE_TITLE}}</h1>
+          <div class="sub">{{I18N_VOICE_INTRO}}</div>
+        </div>
+        <div class="content">
+          <form class="login-form voice-form" method="post">
+            <input id="base" type="hidden" name="base" value="{{BASE}}" />
+            <input id="href" type="hidden" name="href" value="" />
+
+            <fieldset>
+              <legend>{{I18N_VOICE_ENABLE_LABEL}}</legend>
+              <label><input type="radio" name="voice" value="on" checked /> {{I18N_VOICE_ENABLE_ON}}</label>
+              <label><input type="radio" name="voice" value="off" /> {{I18N_VOICE_ENABLE_OFF}}</label>
+            </fieldset>
+
+            <fieldset>
+              <legend>{{I18N_VOICE_LISTENING_LABEL}}</legend>
+              <label
+                ><input type="radio" name="listening" value="pushToTalk" checked /> {{I18N_VOICE_LISTENING_PTT}}</label
+              >
+              <label><input type="radio" name="listening" value="wakeWord" /> {{I18N_VOICE_LISTENING_WAKE}}</label>
+              <div class="indent">
+                <input
+                  class="password text"
+                  type="text"
+                  name="wake-phrase"
+                  value="Hey Twin"
+                  maxlength="40"
+                  placeholder="Hey Twin"
+                />
+                <div class="note">{{I18N_VOICE_WAKE_NOTE}}</div>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>{{I18N_VOICE_BRAIN_LABEL}}</legend>
+              <label
+                ><input type="radio" name="brain" value="claudeAccount" checked /> {{I18N_VOICE_BRAIN_ACCOUNT}}</label
+              >
+              <label><input type="radio" name="brain" value="apiKey" /> {{I18N_VOICE_BRAIN_KEY}}</label>
+              <div class="indent">
+                <input
+                  class="password"
+                  type="password"
+                  name="anthropic-key"
+                  autocomplete="off"
+                  placeholder="sk-ant-… ({{I18N_VOICE_OPTIONAL}})"
+                />
+                <div class="note">{{I18N_VOICE_BRAIN_NOTE}}</div>
+              </div>
+            </fieldset>
+
+            <div class="field actions">
+              <input class="submit -button" value="{{I18N_VOICE_SUBMIT}}" type="submit" />
+              <button class="submit -button secondary" type="submit" name="skip" value="1">{{I18N_VOICE_SKIP}}</button>
+            </div>
+            {{ERROR}}
+          </form>
+        </div>
+      </div>
+    </div>
+    <script>
+      const el = document.getElementById("href")
+      if (el) {
+        el.value = location.href
+      }
+    </script>
+  </body>
+</html>

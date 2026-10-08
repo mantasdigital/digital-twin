@@ -51,9 +51,13 @@ the failing test"*, or dictate text into a terminal or editor.
 - **Shows what it heard** and the planned actions; choose *ask every time*,
   *countdown then run*, or *run immediately*. Destructive commands always ask.
 - **Phone and tablet**: open the Voice Remote on any device logged in to the IDE.
-- First use runs a wizard: Anthropic API key → listening mode → Claude Code
-  login → speech engine (browser built-in, OpenAI or Deepgram for Wispr-Flow-grade
-  accuracy). Keys stay on your server. `digitalTwinVoice.enabled: false` or
+- **Works with your Claude account**, the same login the `claude` terminal
+  command uses, so no API key is needed (an Anthropic API key is the faster,
+  pay-per-use alternative).
+- **Per-user defaults are chosen right after two-factor setup** on a short
+  "Voice Control" page (on/off, push-to-talk or wake word, Claude account or
+  API key). The IDE wizard covers existing users and everything is editable
+  later. Keys stay on your server. `digitalTwinVoice.enabled: false` or
   `DIGITAL_TWIN_BUNDLED_EXTENSIONS=off` turns it off. Details and a rollout
   checklist: `extensions/voice-control/README.md`.
 
@@ -108,6 +112,24 @@ survives, so the entrypoint makes sure the *whole home directory* lives on it:
 - If the volume is mounted at `/home/digital-twin/workspace` only, your projects
   persist but extensions, settings and Claude login do not; mount at
   `/home/digital-twin` instead.
+
+### Upgrading an existing server (do this before you redeploy it)
+
+Servers created before October 2026 with a legacy mount path (`/home/clauder`)
+or `RUN_AS_USER=clauder`/`root` have been writing Claude Code's login and
+history, SSH keys, git credentials and dotfiles to the container's throwaway
+layer. A redeploy deletes that. **On each such server, open a terminal in the
+IDE and run this once, then redeploy:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mantasdigital/digital-twin/main/scripts/rescue-ephemeral-home.sh | bash
+```
+
+It makes a full raw copy of the ephemeral home on the volume, merges it into
+the volume home (newer file wins, histories appended, nothing deleted) and is
+safe to run repeatedly. Servers created from the current template with the
+volume at `/home/digital-twin` need nothing. After the redeploy the entrypoint
+keeps every shell's home on the volume, so this is a one-time step.
 
 Things a volume does **not** protect against: deleting the service or the
 volume, changing the mount path without moving data, and PR/preview

@@ -150,7 +150,14 @@
 
     // Setup card
     $("setup").classList.toggle("hidden", Boolean(setup.complete && setup.claudeLogin))
-    $("stepAnthropic").classList.toggle("done", Boolean(setup.anthropic))
+    $("stepAnthropic").classList.toggle("done", Boolean(setup.brainReady))
+    $("brainDesc").textContent = setup.brainReady
+      ? s.brainActive === "claudeAccount"
+        ? "using your Claude account (terminal login)"
+        : "using an Anthropic API key"
+      : s.brain === "claudeAccount"
+        ? "Claude account chosen: run claude in a terminal and log in"
+        : "Claude account (like the terminal) or an API key"
     $("stepListening").classList.toggle("done", Boolean(setup.listeningChosen))
     $("stepClaude").classList.toggle("done", Boolean(setup.claudeLogin))
     $("stepSpeech").classList.toggle("done", Boolean(setup.speechKey))
@@ -176,14 +183,14 @@
     $("btnEar").classList.toggle("hidden", !wake || !SR)
     if (hf.armed && state.handsFreeOwner && state.handsFreeOwner !== clientId) disarm(true) // another device took over
     if (!wake && hf.armed) disarm()
-    if (wake && first && state.listening.autoStart && mode === "webview" && !state.handsFreeOwner && setup.anthropic)
+    if (wake && first && state.listening.autoStart && mode === "webview" && !state.handsFreeOwner && setup.brainReady)
       arm()
     if (hf.armed) startWakeIfNeeded()
 
     $("hint").textContent = wake
       ? `Say "${state.listening.wakePhrase}", then your command. Or tap to talk.${state.listening.endWord ? ` End with "${state.listening.endWord}" or a ${state.listening.pauseSeconds}s pause.` : ` A ${state.listening.pauseSeconds}s pause ends it.`}`
       : `Tap to talk. Stop with a ${state.listening.pauseSeconds}s pause${state.listening.endWord ? `, the word "${state.listening.endWord}"` : ""} or another tap.`
-    if (!setup.anthropic) setStatus("", "Needs setup")
+    if (!setup.brainReady) setStatus("", "Needs setup")
     else if (cap.phase !== "capture" && !state.busy) idleStatus()
     $("btnSpeak").classList.toggle("off", !speakEnabled)
     $("btnEar").classList.toggle("on", hf.armed)
@@ -212,6 +219,7 @@
   function fillSettings(s) {
     fillingSettings = true
     const values = {
+      brain: s.brain,
       "listening.mode": state.listening.mode,
       "listening.wakePhrase": state.listening.wakePhrase,
       "listening.endWord": state.listening.endWord,
