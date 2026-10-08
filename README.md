@@ -113,6 +113,31 @@ survives, so the entrypoint makes sure the *whole home directory* lives on it:
   persist but extensions, settings and Claude login do not; mount at
   `/home/digital-twin` instead.
 
+### "My workspace is empty after a redeploy"
+
+Almost always the files are safe: the IDE opened a different folder. Servers
+created from the original template keep their volume at `/home/clauder`; images
+built between April and July 2026 ignored that and opened `/home/digital-twin/workspace`
+on the throwaway layer, and a `DIGITAL_TWIN_HOME` variable pointing at the
+wrong path has the same effect today. Run the read-only diagnostic in the
+server's terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mantasdigital/digital-twin/main/scripts/diagnose-volume.sh | bash
+```
+
+It prints where the volume is, which folder the IDE opened, every folder that
+looks like a workspace and whether it is persistent, and a verdict with the
+fix (usually: correct or remove `DIGITAL_TWIN_HOME`, redeploy). The current
+entrypoint also corrects this itself on boot, honours the old `CLAUDER_HOME`,
+and leaves a `WHERE-ARE-MY-FILES.md` note whenever another non-empty
+workspace exists on persistent storage.
+
+Files that were written outside the volume (for example under `~` while the
+IDE ran as root, or in `/home/digital-twin` on an affected image) are gone
+after a redeploy; that is what the rescue script below prevents for the
+*next* redeploy, so run it first.
+
 ### Upgrading an existing server (do this before you redeploy it)
 
 Servers created before October 2026 with a legacy mount path (`/home/clauder`)

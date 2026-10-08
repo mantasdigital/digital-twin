@@ -56,7 +56,7 @@ $HOME/.claude/local       <- Claude Code from volume
 - Volume located via `RAILWAY_VOLUME_MOUNT_PATH` → `DIGITAL_TWIN_HOME` → legacy `/home/<name>` scan
 - `/etc/passwd` home of UID 1000 is rewritten to `$DIGITAL_TWIN_HOME` so every shell (gosu/su/sudo/login) writes to the volume
 - Any `RUN_AS_USER` other than `root` runs as the non-root user (legacy `clauder` included)
-- Device-id check: refuses to boot on ephemeral storage when a volume is configured but not mounted at the home; warns + writes `workspace/NO-VOLUME-WARNING.md` when no volume exists
+- Device-id check: a `DIGITAL_TWIN_HOME` that is not on the volume is auto-corrected to the mounted volume (legacy `CLAUDER_HOME` honoured); boot refuses only when a configured volume is not mounted at all; warns + writes `workspace/NO-VOLUME-WARNING.md` when no volume exists; writes `WHERE-ARE-MY-FILES.md` when another non-empty workspace exists on persistent storage
 - Ownership fix: top level synchronously, deep `chown -R` in the background (large volumes must not block the health check)
 
 ### What Persists (on volume)
@@ -79,4 +79,5 @@ $HOME/.claude/local       <- Claude Code from volume
 | `README.md` | User documentation |
 | `extensions/voice-control/` | Voice Control extension source (built into a VSIX by the Dockerfile, installed on boot by the entrypoint) |
 | `src/node/routes/voiceSetup.ts` | Post-2FA per-user Voice Control defaults page (`/voice-setup`), writes a seed the extension consumes |
+| `scripts/diagnose-volume.sh` | Read-only check for "workspace empty after redeploy": volume location, opened folder, candidate workspaces, verdict |
 | `scripts/rescue-ephemeral-home.sh` | One-time rescue of data written to the ephemeral layer on legacy deployments; run inside the container before redeploy |

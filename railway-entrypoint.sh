@@ -21,6 +21,11 @@ echo ""
 #    name) or any other /home/<name>; those keep working as-is.
 # 3. Only when no volume is found do we fall back to /home/digital-twin, which
 #    lives in the image layer and is wiped on every redeploy.
+# Services created from the original template still carry CLAUDER_HOME.
+if [ -z "${DIGITAL_TWIN_HOME:-}" ] && [ -n "${CLAUDER_HOME:-}" ] && [ -d "$CLAUDER_HOME" ]; then
+    DIGITAL_TWIN_HOME="$CLAUDER_HOME"
+    echo "→ Using legacy CLAUDER_HOME=$CLAUDER_HOME"
+fi
 if [ -z "${DIGITAL_TWIN_HOME:-}" ] && [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ] && [ -d "$RAILWAY_VOLUME_MOUNT_PATH" ]; then
     case "$RAILWAY_VOLUME_MOUNT_PATH" in
         */workspace)
@@ -73,16 +78,36 @@ if [ "$home_dev" != "$root_dev" ]; then
 elif [ "$ws_dev" != "$root_dev" ]; then
     echo "⚠ Only $DIGITAL_TWIN_HOME/workspace is persistent; the rest of the home directory is not."
 else
-    if [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ] && [ "${DIGITAL_TWIN_ALLOW_NO_VOLUME:-}" != "1" ]; then
-        echo "✖ A Railway volume is configured at $RAILWAY_VOLUME_MOUNT_PATH but $DIGITAL_TWIN_HOME is NOT on it."
+    # $DIGITAL_TWIN_HOME is on the throwaway layer. Before giving up, look for
+    # a persistent directory that holds a home: a wrong or stale variable
+    # (e.g. DIGITAL_TWIN_HOME=/home/digital-twin while the volume is still
+    # mounted at the legacy /home/clauder) must never hide the user's files
+    # behind an empty folder.
+    corrected=""
+    for cand in "${RAILWAY_VOLUME_MOUNT_PATH:-}" "${CLAUDER_HOME:-}" /home/clauder /home/digital-twin /home/*/ /data; do
+        cand="${cand%/}"
+        [ -n "$cand" ] && [ -d "$cand" ] || continue
+        [ "$(stat -c %d "$cand" 2>/dev/null)" != "$root_dev" ] || continue
+        case "$cand" in */workspace) cand="$(dirname "$cand")" ;; esac
+        corrected="$cand"
+        break
+    done
+    if [ -n "$corrected" ]; then
+        echo "⚠ DIGITAL_TWIN_HOME=$DIGITAL_TWIN_HOME is NOT on the persistent volume; using $corrected instead."
+        echo "  Fix the Railway variable (or remove it) to silence this warning."
+        DIGITAL_TWIN_HOME="$corrected"
+        export DIGITAL_TWIN_HOME
+        echo "→ Persistent volume: OK (auto-corrected)"
+    elif [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ] && [ "${DIGITAL_TWIN_ALLOW_NO_VOLUME:-}" != "1" ]; then
+        echo "✖ A Railway volume is configured at $RAILWAY_VOLUME_MOUNT_PATH but nothing persistent is mounted."
         echo "  Refusing to start on ephemeral storage: files written now would be lost on the next deploy."
-        echo "  Fix: mount the volume at $DIGITAL_TWIN_HOME, or set DIGITAL_TWIN_HOME=$RAILWAY_VOLUME_MOUNT_PATH,"
-        echo "  or set DIGITAL_TWIN_ALLOW_NO_VOLUME=1 to override."
+        echo "  Check the volume in Railway, or set DIGITAL_TWIN_ALLOW_NO_VOLUME=1 to override."
         exit 1
+    else
+        echo "⚠⚠⚠ NO PERSISTENT VOLUME at $DIGITAL_TWIN_HOME — ALL FILES WILL BE LOST ON REDEPLOY ⚠⚠⚠"
+        echo "    Attach a Railway volume with mount path $DIGITAL_TWIN_HOME."
+        NO_VOLUME=1
     fi
-    echo "⚠⚠⚠ NO PERSISTENT VOLUME at $DIGITAL_TWIN_HOME — ALL FILES WILL BE LOST ON REDEPLOY ⚠⚠⚠"
-    echo "    Attach a Railway volume with mount path $DIGITAL_TWIN_HOME."
-    NO_VOLUME=1
 fi
 DIGITAL_TWIN_UID="${DIGITAL_TWIN_UID:-1000}"
 DIGITAL_TWIN_GID="${DIGITAL_TWIN_GID:-1000}"
@@ -230,6 +255,12 @@ PROFILE
                 ln -sf "$target" "$link" 2>/dev/null || true
             fi
         done
+        # Root's own ~/workspace is on the throwaway layer; point it at the volume.
+        if [ ! -e /root/workspace ] || [ -L /root/workspace ]; then
+            ln -sfn "$DIGITAL_TWIN_HOME/workspace" /root/workspace 2>/dev/null || true
+        elif [ -n "$(ls -A /root/workspace 2>/dev/null)" ]; then
+            echo "  ⚠ /root/workspace holds files on the ephemeral layer; move them to $DIGITAL_TWIN_HOME/workspace"
+        fi
         echo "  ✓ Root directories symlinked to $DIGITAL_TWIN_HOME"
     fi
 fi
@@ -311,6 +342,37 @@ once a volume is detected.
 WARN
 elif [ -f "$NO_VOLUME_FILE" ]; then
     rm -f "$NO_VOLUME_FILE" 2>/dev/null || true
+fi
+
+# If some OTHER persistent folder looks like a workspace with content, say so
+# loudly and leave a note: that is what an "empty workspace after redeploy"
+# almost always is — the IDE opened a different folder, the files are safe.
+OTHER_WS=""
+for cand in "${RAILWAY_VOLUME_MOUNT_PATH:-}/workspace" "${CLAUDER_HOME:-}/workspace" /home/*/workspace /data/workspace; do
+    [ -d "$cand" ] || continue
+    [ "$(readlink -f "$cand")" = "$(readlink -f "$HOME/workspace")" ] && continue
+    [ "$(stat -c %d "$cand" 2>/dev/null)" = "$root_dev" ] && continue
+    [ "$(ls -A "$cand" 2>/dev/null | grep -v -c '^README.md$')" -gt 0 ] || continue
+    case " $OTHER_WS " in *" $cand "*) continue ;; esac
+    OTHER_WS="$OTHER_WS $cand"
+done
+HINT_FILE="$HOME/workspace/WHERE-ARE-MY-FILES.md"
+if [ -n "$OTHER_WS" ]; then
+    echo "⚠ Other workspaces with files exist on persistent storage but are not the one opened by the IDE:"
+    for w in $OTHER_WS; do echo "    $w"; done
+    {
+        echo "# Looking for your files?"
+        echo
+        echo "The IDE opened \`$HOME/workspace\`, but these folders on persistent storage also contain a workspace:"
+        echo
+        for w in $OTHER_WS; do echo "- \`$w\`"; done
+        echo
+        echo "Nothing was deleted. To open one of them permanently, set the Railway variable"
+        echo "\`DIGITAL_TWIN_HOME\` to its parent folder (or remove the variable) and redeploy."
+        echo "This note disappears once no other workspace is found."
+    } > "$HINT_FILE" 2>/dev/null || true
+elif [ -f "$HINT_FILE" ]; then
+    rm -f "$HINT_FILE" 2>/dev/null || true
 fi
 
 # ============================================================================
