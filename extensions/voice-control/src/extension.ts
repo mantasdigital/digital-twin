@@ -153,6 +153,7 @@ class VoiceController {
     try {
       switch (msg.type) {
         case "ready":
+          this.output.appendLine(`[client] ${msg.kind || "panel"} connected: ${String(msg.ua || "").slice(0, 160)}`)
           await this.sendState()
           break
         case "recording":

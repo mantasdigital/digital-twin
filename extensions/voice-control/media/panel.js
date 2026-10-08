@@ -501,15 +501,48 @@
     if (hf.armed) await configureOnDevice(rec)
     rec.onresult = onRecResult
     rec.onerror = (e) => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      const err = e.error
+      post({ type: "log", text: `recognizer error: ${err} ${e.message || ""}` })
+      if (err === "not-allowed" || err === "service-not-allowed") {
         hf.rec = null
-        micFailure({ name: "NotAllowedError", message: e.message || e.error })
+        micFailure({ name: "NotAllowedError", message: e.message || err })
         disarm()
         if (cap.phase === "capture") abortCapture()
         return
       }
-      if (e.error === "network") hf.backoff = Math.min(8000, hf.backoff * 2)
-      // no-speech / aborted / audio-capture: onend follows and restarts if needed
+      if (err === "audio-capture") {
+        hf.rec = null
+        micFailure({ name: "NotFoundError", message: "no microphone input" })
+        disarm()
+        if (cap.phase === "capture") abortCapture()
+        return
+      }
+      if (err === "language-not-supported") {
+        hf.rec = null
+        showError(
+          `Speech recognition does not support the language "${state.language}". Clear or change Language in Settings.`,
+        )
+        disarm()
+        if (cap.phase === "capture") abortCapture()
+        return
+      }
+      if (err === "network") {
+        // Chromium forks that strip Google services (Brave, Comet, ...) report
+        // "network" immediately and forever. Two in a row means: give up and say so.
+        hf.netErrors = (hf.netErrors || 0) + 1
+        hf.backoff = Math.min(8000, hf.backoff * 2)
+        if (hf.netErrors >= 2) {
+          hf.netErrors = 0
+          hf.rec = null
+          showError(
+            "This browser's built-in speech service is unreachable (common in privacy browsers such as Brave or Comet). Use Chrome or Edge, or switch the speech engine to OpenAI or Deepgram in Settings.",
+          )
+          disarm()
+          if (cap.phase === "capture") abortCapture()
+          return
+        }
+      }
+      // no-speech / aborted: onend follows and restarts if needed
     }
     rec.onend = () => {
       hf.rec = null
@@ -550,6 +583,7 @@
   }
 
   function onRecResult(e) {
+    hf.netErrors = 0
     if (ttsSpeaking || Date.now() - lastTtsEnd < 800) return // never react to our own voice
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i]
@@ -881,5 +915,9 @@
   })
   if (isIOS) $("hint").textContent += " On iPhone/iPad keep this page open; the screen lock stops the microphone."
 
-  if (mode === "webview") post({ type: "ready", clientId, kind: "webview" })
+  if (mode === "webview") post({ type: "ready", clientId, kind: "webview", ua: navigator.userAgent })
+  post({
+    type: "log",
+    text: `panel booted (${mode}; speechRecognition=${Boolean(SR)}; mediaDevices=${Boolean(navigator.mediaDevices)})`,
+  })
 })()
