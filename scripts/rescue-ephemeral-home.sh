@@ -40,7 +40,9 @@ for h in "$HOME" "$(getent passwd "$(id -u)" | cut -d: -f6)" /home/digital-twin 
     [ "$h" = "$VOL" ] && continue
     on_volume "$h" && continue
     case " ${candidates[*]:-} " in *" $h "*) continue ;; esac
-    if [ -n "$(ls -A "$h" 2>/dev/null | grep -v -E '^(\.bash_logout|\.bashrc|\.profile|workspace|entrypoint\.d)$')" ]; then
+    lister="ls -A"
+    if { [ ! -r "$h" ] || [ ! -x "$h" ]; } && sudo -n true 2>/dev/null; then lister="sudo -n ls -A"; fi
+    if [ -n "$($lister "$h" 2>/dev/null | grep -v -E '^(\.bash_logout|\.bashrc|\.profile|\.cache|workspace|entrypoint\.d)$')" ]; then
         candidates+=("$h")
     fi
 done
@@ -50,15 +52,36 @@ if [ ${#candidates[@]} -eq 0 ]; then
 fi
 
 STAMP="$(date +%Y-%m-%d)"
+uid="$(stat -c %u "$VOL")"
+gid="$(stat -c %g "$VOL")"
 for EPH in "${candidates[@]}"; do
+    # /root (RUN_AS_USER=root deployments) is only readable as root.
+    SUDO=""
+    if [ ! -r "$EPH" ] || [ ! -x "$EPH" ]; then
+        if sudo -n true 2>/dev/null; then
+            SUDO="sudo -n"
+        else
+            echo "⚠ $EPH is not readable and sudo is unavailable; skipping it."
+            continue
+        fi
+    fi
     echo ""
-    echo "→ Ephemeral home with data: $EPH ($(du -sh --exclude=.cache "$EPH" 2>/dev/null | cut -f1))"
+    echo "→ Ephemeral home with data: $EPH ($($SUDO du -sh --exclude=.cache "$EPH" 2>/dev/null | cut -f1))"
     BACKUP="$VOL/.ephemeral-home-backup-$STAMP$(echo "$EPH" | tr / _)"
     echo "→ Full raw backup to $BACKUP"
     mkdir -p "$BACKUP"
-    rsync -a --exclude .cache --exclude 'workspace/' --exclude 'entrypoint.d/' "$EPH/" "$BACKUP/"
+    if [ -n "$SUDO" ]; then
+        $SUDO rsync -a --chown="$uid:$gid" --exclude .cache --exclude 'workspace/' --exclude 'entrypoint.d/' "$EPH/" "$BACKUP/"
+    else
+        rsync -a --exclude .cache --exclude 'workspace/' --exclude 'entrypoint.d/' "$EPH/" "$BACKUP/"
+    fi
     echo "→ Merging into $VOL (newer file wins, histories appended, nothing deleted)"
-    python3 -I - "$EPH" "$VOL" <<'PY'
+    # rsync -a from a root-owned home also rewrites the owner and mode of the
+    # destination directory itself; remember them and put them back.
+    vol_owner="$(stat -c %u:%g "$VOL")"
+    vol_mode="$(stat -c %a "$VOL")"
+    merge_ok=1
+    $SUDO python3 -I - "$EPH" "$VOL" <<'PY' || merge_ok=0
 import json, os, shutil, subprocess, sys, time
 EPH, VOL = sys.argv[1], sys.argv[2]
 STAMP = time.strftime("%Y%m%d-%H%M%S")
@@ -112,9 +135,13 @@ if os.path.isdir(ep):
 excl = [".cache", "workspace/", "entrypoint.d/", ".bashrc", ".profile", ".bash_logout", ".bash_history",
         ".claude/history.jsonl", ".claude.json", ".claude.json.tmp.*", ".claude/settings.json", "MEMORY.md",
         ".gnupg/", ".npm/_cacache/", ".claude/paste-cache/", ".ephemeral-home-backup-*"]
-cmd = ["rsync", "-a", "--update", "--stats"] + [f"--exclude={x}" for x in excl] + [EPH + "/", VOL + "/"]
+# --no-links: RUN_AS_USER=root deployments symlink /root/.claude etc. INTO the
+# volume; copying those links back would try to replace real directories.
+cmd = ["rsync", "-a", "--update", "--stats", "--no-links"] + [f"--exclude={x}" for x in excl] + [EPH + "/", VOL + "/"]
 res = subprocess.run(cmd, capture_output=True, text=True)
-if res.returncode != 0: print(res.stderr); sys.exit(1)
+if res.returncode not in (0, 23, 24):
+    print(res.stderr); sys.exit(1)
+if res.returncode: log("note: some entries could not be transferred (symlinks or busy files); continuing")
 for line in res.stdout.splitlines():
     if line.startswith(("Number of regular files transferred", "Total transferred file size")): log(line)
 log(f".claude/history.jsonl: +{concat_unique(EPH + '/.claude/history.jsonl', VOL + '/.claude/history.jsonl')} entries")
@@ -122,9 +149,18 @@ log(f".bash_history: +{concat_unique(EPH + '/.bash_history', VOL + '/.bash_histo
 merge_json(".claude.json"); merge_json(".claude/settings.json")
 if os.path.isdir(os.path.join(EPH, ".gnupg")): log("note: .gnupg not merged (keyrings don't merge safely); it is in the raw backup")
 PY
+    [ "$merge_ok" = "1" ] || echo "  ⚠ merge of $EPH reported errors; the raw backup is complete, ownership is fixed below"
+    $SUDO chown "$vol_owner" "$VOL" 2>/dev/null || chown "$vol_owner" "$VOL" 2>/dev/null || true
+    $SUDO chmod "$vol_mode" "$VOL" 2>/dev/null || chmod "$vol_mode" "$VOL" 2>/dev/null || true
+    # Whatever came from this home must belong to the volume's user, not root.
+    if [ -n "$SUDO" ]; then
+        $SUDO find "$EPH" -mindepth 1 -maxdepth 1 -printf '%f\n' | while IFS= read -r entry; do
+            [ -e "$VOL/$entry" ] && $SUDO chown -R "$uid:$gid" "$VOL/$entry" 2>/dev/null || true
+        done
+        $SUDO chown -R "$uid:$gid" "$BACKUP" 2>/dev/null || true
+    fi
 done
 
-uid="$(stat -c %u "$VOL")"
-chown -R "$uid" "$VOL/.claude" "$VOL/.claude.json" 2>/dev/null || sudo -n chown -R "$uid" "$VOL/.claude" "$VOL/.claude.json" 2>/dev/null || true
+chown -R "$uid:$gid" "$VOL/.claude" "$VOL/.claude.json" 2>/dev/null || sudo -n chown -R "$uid:$gid" "$VOL/.claude" "$VOL/.claude.json" 2>/dev/null || true
 echo ""
 echo "✓ Rescue complete. You can redeploy now. Raw backups: $VOL/.ephemeral-home-backup-$STAMP*"
