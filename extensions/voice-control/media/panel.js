@@ -90,6 +90,7 @@
 
   function onHost(msg) {
     if (!msg || typeof msg !== "object") return
+    window.__dtvLast = msg // test hook
     switch (msg.type) {
       case "state":
         applyState(msg)
@@ -130,7 +131,10 @@
         onWakeResult(msg)
         break
       case "processes":
-        renderProcesses(msg.items || [])
+        renderProcesses(msg.items || [], msg.watchers)
+        break
+      case "chunk":
+        onChunk(msg)
         break
     }
   }
@@ -203,9 +207,17 @@
       arm()
     if (hf.armed) startWakeIfNeeded()
 
-    $("hint").textContent = wake
-      ? `Say "${state.listening.wakePhrase}", then your command. Or tap to talk.${state.listening.endWord ? ` End with "${state.listening.endWord}" or a ${state.listening.pauseSeconds}s pause.` : ` A ${state.listening.pauseSeconds}s pause ends it.`}`
-      : `Tap to talk. Stop with a ${state.listening.pauseSeconds}s pause${state.listening.endWord ? `, the word "${state.listening.endWord}"` : ""} or another tap.`
+    const L = state.listening
+    const endings = []
+    if (L.endWord) endings.push(`say "${L.endWord}" to run`)
+    if (L.pauseAction === "execute") endings.push(`a ${L.pauseSeconds}s pause runs it`)
+    if (L.pauseAction === "cancel") endings.push(`a ${L.pauseSeconds}s pause cancels`)
+    if (!L.endWord && L.pauseAction !== "execute") endings.push(`a ${L.pauseSeconds}s pause runs it`)
+    if (L.cancelWord) endings.push(`"${L.cancelWord}" drops it`)
+    if (L.terminateWord) endings.push(`"${L.terminateWord}" stops everything`)
+    endings.push("or tap again")
+    $("hint").textContent =
+      (wake ? `Say "${L.wakePhrase}", then your command. Or tap to talk. ` : "Tap to talk. ") + endings.join(", ") + "."
     if (!setup.brainReady) setStatus("", "Needs setup")
     else if (cap.phase !== "capture" && !state.busy) idleStatus()
     $("btnSpeak").classList.toggle("off", !speakEnabled)
@@ -239,9 +251,18 @@
     }
   }
 
-  function renderProcesses(items) {
+  function renderProcesses(items, watchers) {
     const ul = $("processes")
     ul.innerHTML = ""
+    const w = $("watchers")
+    if (watchers && watchers.total) {
+      const pct = watchers.limit ? Math.round((watchers.total / watchers.limit) * 100) : 0
+      w.textContent = `File watchers in use: ${watchers.total.toLocaleString()}${watchers.limit ? ` of ${watchers.limit.toLocaleString()} (${pct}%)` : ""}`
+      w.className = "muted small" + (pct >= 60 ? " warn" : "")
+      if (pct >= 60)
+        w.textContent +=
+          " — the hosting platform stops the container when this runs out. Exclude big folders in Settings → Files: Watcher Exclude, or open a single project instead of the whole workspace."
+    } else w.textContent = ""
     if (!items.length) {
       const li = document.createElement("li")
       li.className = "muted"
@@ -253,7 +274,7 @@
       const li = document.createElement("li")
       li.className = "proc " + p.kind
       const label = document.createElement("span")
-      label.textContent = `${p.label} · pid ${p.pid} · ${p.uptime}`
+      label.textContent = `${p.label} · pid ${p.pid}${p.uptime ? ` · ${p.uptime}` : ""}${p.watches ? ` · ${p.watches.toLocaleString()} watches` : ""}`
       li.appendChild(label)
       for (const [text, force] of [
         ["Stop", false],
@@ -286,6 +307,9 @@
       "listening.mode": state.listening.mode,
       "listening.wakePhrase": state.listening.wakePhrase,
       "listening.endWord": state.listening.endWord,
+      "listening.cancelWord": state.listening.cancelWord,
+      "listening.terminateWord": state.listening.terminateWord,
+      "listening.pauseAction": state.listening.pauseAction || "nothing",
       "listening.pauseSeconds": state.listening.pauseSeconds,
       "listening.autoStart": state.listening.autoStart,
       "listening.chime": state.listening.chime,
@@ -426,7 +450,7 @@
       const o = audioCtx.createOscillator()
       const g = audioCtx.createGain()
       o.type = "sine"
-      o.frequency.value = kind === "wake" ? 880 : kind === "done" ? 660 : 440
+      o.frequency.value = kind === "wake" ? 880 : kind === "done" ? 660 : kind === "cancel" ? 330 : 440
       g.gain.value = 0.0001
       o.connect(g).connect(audioCtx.destination)
       const t = audioCtx.currentTime
@@ -502,11 +526,45 @@
     }
     return null
   }
-  function endsWithEndWord(text) {
-    const ew = norm(state.listening.endWord)
-    if (!ew) return false
+  function endsWithWord(text, word) {
+    const w = norm(word)
+    if (!w) return false
     const t = norm(text)
-    return t === ew || t.endsWith(" " + ew)
+    return t === w || t.endsWith(" " + w)
+  }
+  function containsWord(text, word) {
+    const w = norm(word)
+    if (!w) return false
+    return (" " + norm(text) + " ").includes(" " + w + " ")
+  }
+  function endsWithEndWord(text) {
+    return endsWithWord(text, state.listening.endWord)
+  }
+  /** Shared reaction to the spoken control words; returns true when the capture was consumed. */
+  function handleControlWords(whole, isFinal) {
+    const L = state.listening
+    if (L.terminateWord && containsWord(whole, L.terminateWord)) {
+      abortCapture()
+      disarm()
+      post({ type: "stopAll" })
+      return true
+    }
+    if (L.cancelWord && endsWithWord(whole, L.cancelWord)) {
+      cancelCapture()
+      return true
+    }
+    if (endsWithEndWord(whole) && (isFinal || cap.interim)) {
+      finishCapture("endword")
+      return true
+    }
+    return false
+  }
+  function cancelCapture() {
+    if (cap.phase !== "capture") return
+    abortCapture()
+    chime("cancel")
+    showHeard("", "")
+    idleStatus("Cancelled")
   }
   function stripEndWord(text) {
     const ew = norm(state.listening.endWord)
@@ -744,7 +802,7 @@
           speak("Okay, I stopped listening.")
           return
         }
-        if (endsWithEndWord(whole) && (isFinal || cap.interim)) finishCapture("endword")
+        handleControlWords(whole, isFinal)
         continue
       }
       if (hf.armed) {
@@ -797,7 +855,17 @@
   function resetSilence() {
     clearTimeout(cap.silenceTimer)
     if (cap.phase !== "capture") return
-    cap.silenceTimer = setTimeout(() => finishCapture("pause"), state.listening.pauseSeconds * 1000)
+    cap.silenceTimer = setTimeout(onLongPause, state.listening.pauseSeconds * 1000)
+  }
+  function onLongPause() {
+    if (cap.phase !== "capture") return
+    const L = state.listening
+    const action = L.pauseAction || "nothing"
+    if (action === "cancel") return cancelCapture()
+    // "nothing" with no execute word configured would leave no way to finish by voice:
+    if (action === "execute" || !L.endWord) return finishCapture("pause")
+    // nothing: keep listening quietly; the hard limit (maxCommandSeconds) still applies
+    setStatus("recording", `Listening… say "${L.endWord}" to run${L.cancelWord ? `, "${L.cancelWord}" to drop` : ""}`)
   }
 
   function finishCapture(reason) {
@@ -810,9 +878,11 @@
     cap.interim = ""
     $("mic").classList.remove("recording")
     post({ type: "recording", active: false })
-    if (state.sttMode === "record" && cap.recorder) {
-      stopRecorder(text) // sends audio (browser text goes along as a fallback hint)
-    } else if (text) {
+    if (state.sttMode === "record") {
+      finalizeRecordCapture(text)
+      return
+    }
+    if (text) {
       chime("done")
       showHeard(text, "")
       setStatus("busy", "Sending…")
@@ -841,6 +911,10 @@
       }
       cap.recorder = null
     }
+    stopChunk()
+    cap.pendingChunks = null
+    cap.finalizing = false
+    clearTimeout(cap.finalizeTimer)
     if (cap.micHeld) {
       cap.micHeld = false
       releaseMic()
@@ -1168,50 +1242,114 @@
       releaseMic()
       return
     }
-    const source = micStream()
-    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find(
-      (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m),
-    )
-    const chunks = []
-    try {
-      cap.recorder = new MediaRecorder(source, mime ? { mimeType: mime, audioBitsPerSecond: 48000 } : undefined)
-    } catch (err) {
-      micFailure(err)
-      releaseMic()
-      abortCapture()
-      return
-    }
     cap.micHeld = true
     cap.spoke = false
-    cap.recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size) chunks.push(e.data)
-    }
-    cap.recorder.onstop = async () => {
-      const rec = cap.recorder
-      cap.recorder = null
-      if (cap.micHeld) {
-        cap.micHeld = false
-        releaseMic()
-      }
-      const blob = new Blob(chunks, { type: (rec && rec.mimeType) || mime || "audio/webm" })
-      if (blob.size < 1000) {
-        idleStatus("Too short")
+    cap.captureId = Math.random().toString(36).slice(2, 10)
+    cap.seq = 0
+    cap.pendingChunks = new Set()
+    // audio is recorded in utterance-sized chunks by the meter hook (captureTick)
+  }
+  /** Chunked capture: one recorder per utterance, transcribed as soon as it ends. */
+  const chunkRec = { recorder: null, startedAt: 0, lastSpeech: 0 }
+  function captureTick(speaking, now) {
+    if (!mic.stream) return
+    if (!chunkRec.recorder) {
+      if (!speaking || cap.phase !== "capture") return
+      const source = micStream()
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find(
+        (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m),
+      )
+      let rec
+      try {
+        rec = new MediaRecorder(source, mime ? { mimeType: mime } : undefined)
+      } catch (e) {
         return
       }
-      chime("done")
-      setStatus("busy", "Uploading…")
-      const data = await blobToBase64(blob)
-      post({ type: "audio", mime: blob.type, data, hint: cap.lastHint || "", purpose: "command" })
+      const chunks = []
+      const captureId = cap.captureId
+      const seq = ++cap.seq
+      const pending = cap.pendingChunks
+      pending && pending.add(seq)
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunks.push(e.data)
+      }
+      rec.onstop = async () => {
+        if (chunkRec.recorder === rec) chunkRec.recorder = null
+        const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/webm" })
+        if (blob.size < 1500 || cap.captureId !== captureId) {
+          pending && pending.delete(seq)
+          if (cap.finalizing && pending && pending.size === 0) completeFinalize()
+          return
+        }
+        const data = await blobToBase64(blob)
+        post({ type: "audio", mime: blob.type, data, purpose: "chunk", captureId, seq })
+      }
+      rec.start(250)
+      chunkRec.recorder = rec
+      chunkRec.startedAt = now
+      chunkRec.lastSpeech = now
+      return
     }
-    cap.recorder.start(250)
+    if (speaking) chunkRec.lastSpeech = now
+    if (now - chunkRec.lastSpeech > 1000 || now - chunkRec.startedAt > 20000) stopChunk()
   }
-  function stopRecorder(hintText) {
-    cap.lastHint = hintText || ""
+  function stopChunk() {
     try {
-      if (cap.recorder && cap.recorder.state !== "inactive") cap.recorder.stop()
+      if (chunkRec.recorder && chunkRec.recorder.state !== "inactive") chunkRec.recorder.stop()
+      else chunkRec.recorder = null
     } catch (e) {
-      /* ignore */
+      chunkRec.recorder = null
     }
+  }
+  function onChunk(msg) {
+    if (!cap.pendingChunks || msg.captureId !== cap.captureId) return
+    cap.pendingChunks.delete(msg.seq)
+    if (msg.error) showError(msg.error)
+    const text = (msg.text || "").trim()
+    if (text) {
+      if (cap.phase === "capture") {
+        cap.buffer = (cap.buffer + " " + text).trim()
+        showHeard(cap.buffer, "")
+        if (handleControlWords(cap.buffer, true)) return
+      } else if (cap.finalizing) {
+        cap.finalText = (cap.finalText + " " + text).trim()
+        showHeard(cap.finalText, "")
+      }
+    }
+    if (cap.finalizing && cap.pendingChunks.size === 0) completeFinalize()
+  }
+  function finalizeRecordCapture(textSoFar) {
+    cap.finalizing = true
+    cap.finalText = textSoFar
+    stopChunk()
+    setStatus("busy", "Transcribing…")
+    clearTimeout(cap.finalizeTimer)
+    cap.finalizeTimer = setTimeout(completeFinalize, 12000) // bounded wait for the last chunk
+    if (!chunkRec.recorder && cap.pendingChunks && cap.pendingChunks.size === 0) completeFinalize()
+  }
+  function completeFinalize() {
+    if (!cap.finalizing) return
+    cap.finalizing = false
+    clearTimeout(cap.finalizeTimer)
+    const text = stripEndWord(cap.finalText || "")
+    cap.finalText = ""
+    cap.pendingChunks = null
+    if (cap.micHeld) {
+      cap.micHeld = false
+      releaseMic()
+    }
+    if (state.listening.cancelWord && endsWithWord(text, state.listening.cancelWord)) {
+      chime("cancel")
+      idleStatus("Cancelled")
+    } else if (text) {
+      chime("done")
+      showHeard(text, "")
+      setStatus("busy", "Sending…")
+      post({ type: "transcript", text })
+    } else {
+      idleStatus("Didn't catch that")
+    }
+    startWakeIfNeeded()
   }
 
   /** Voice detection is driven by the shared meter; this hook ends a command on silence. */
@@ -1224,8 +1362,18 @@
       } else if (!cap.spoke && now - cap.startedAt < 12000) {
         resetSilence() // still waiting for the first word
       }
+      captureTick(speaking, now)
+    } else if (cap.finalizing && state.sttMode === "record") {
+      captureTick(false, now) // lets the last chunk close
     }
-    if (hf.armed && state.sttMode === "record" && cap.phase !== "capture" && !state.busy && !ttsSpeaking) {
+    if (
+      hf.armed &&
+      state.sttMode === "record" &&
+      cap.phase !== "capture" &&
+      !cap.finalizing &&
+      !state.busy &&
+      !ttsSpeaking
+    ) {
       handsFreeTick(speaking, now)
     }
   }

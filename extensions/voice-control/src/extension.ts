@@ -7,6 +7,8 @@ import {
   claudeCodeInstalled,
   claudeCodeLoggedIn,
   ConcreteProvider,
+  containsWord,
+  endsWithWord,
   findClaudeBinary,
   Keys,
   matchWake,
@@ -117,6 +119,11 @@ class VoiceController {
         }
         if (seed.listeningMode) await updateSetting("listening.mode", seed.listeningMode)
         if (seed.wakePhrase) await updateSetting("listening.wakePhrase", seed.wakePhrase)
+        if (seed.pauseAction) await updateSetting("listening.pauseAction", seed.pauseAction)
+        if (typeof seed.endWord === "string") await updateSetting("listening.endWord", seed.endWord)
+        if (typeof seed.cancelWord === "string") await updateSetting("listening.cancelWord", seed.cancelWord)
+        if (typeof seed.terminateWord === "string") await updateSetting("listening.terminateWord", seed.terminateWord)
+        if (typeof seed.pauseSeconds === "number") await updateSetting("listening.pauseSeconds", seed.pauseSeconds)
         if (seed.brain) await updateSetting("brain", seed.brain)
         if (seed.anthropicApiKey && seed.anthropicApiKey.startsWith("sk-ant-"))
           await this.keys.set(SECRET_ANTHROPIC, seed.anthropicApiKey)
@@ -190,7 +197,8 @@ class VoiceController {
             String(msg.data ?? ""),
             String(msg.mime ?? "audio/webm"),
             String(msg.hint ?? ""),
-            msg.purpose === "wake" ? "wake" : "command",
+            msg.purpose === "wake" ? "wake" : msg.purpose === "chunk" ? "chunk" : "command",
+            { captureId: String(msg.captureId ?? ""), seq: Number(msg.seq ?? 0) },
           )
           break
         case "confirm":
@@ -268,6 +276,9 @@ class VoiceController {
         wakePhrase: s.wakePhrase,
         wakeAliases: s.wakeAliases,
         endWord: s.endWord,
+        cancelWord: s.cancelWord,
+        terminateWord: s.terminateWord,
+        pauseAction: s.pauseAction,
         pauseSeconds: s.pauseSeconds,
         maxCommandSeconds: s.maxCommandSeconds,
         autoStart: s.autoStart,
@@ -385,8 +396,64 @@ class VoiceController {
     return list.slice(0, 40)
   }
 
+  /** inotify watches held by a process (readable for our own uid only). */
+  private inotifyWatches(pid: number): number {
+    let n = 0
+    try {
+      for (const fd of fs.readdirSync(`/proc/${pid}/fdinfo`)) {
+        try {
+          const info = fs.readFileSync(`/proc/${pid}/fdinfo/${fd}`, "utf8")
+          if (info.includes("inotify")) n += info.split("\n").filter((l) => l.startsWith("inotify")).length
+        } catch {
+          // fd vanished
+        }
+      }
+    } catch {
+      // not readable
+    }
+    return n
+  }
+
   private async sendProcesses(): Promise<void> {
-    this.broadcast({ type: "processes", items: await this.listProcesses() })
+    const items = await this.listProcesses()
+    // Railway stops the container when inotify watches run out; show who holds them.
+    let total = 0
+    let limit = 0
+    try {
+      limit = Number(fs.readFileSync("/proc/sys/fs/inotify/max_user_watches", "utf8").trim()) || 0
+      const heavy: Array<{ pid: number; ppid: number; kind: string; label: string; uptime: string; watches: number }> =
+        []
+      for (const dir of fs.readdirSync("/proc")) {
+        if (!/^\d+$/.test(dir)) continue
+        const pid = Number(dir)
+        const w = this.inotifyWatches(pid)
+        if (!w) continue
+        total += w
+        const known = items.find((i) => i.pid === pid) as any
+        if (known) known.watches = w
+        else if (w >= 2000) {
+          let args = ""
+          try {
+            args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim()
+          } catch {
+            // ignore
+          }
+          heavy.push({
+            pid,
+            ppid: 0,
+            kind: "watcher",
+            label: `File watcher: ${args.replace(/^.*bootstrap-fork --type=/, "VS Code ").slice(0, 70)}`,
+            uptime: "",
+            watches: w,
+          })
+        }
+      }
+      this.knownPids = new Set([...this.knownPids, ...heavy.map((h) => h.pid)])
+      items.push(...heavy)
+    } catch {
+      // /proc not available
+    }
+    this.broadcast({ type: "processes", items, watchers: { total, limit } })
   }
 
   private async killProcess(pid: number, force: boolean): Promise<void> {
@@ -624,13 +691,6 @@ class VoiceController {
         validateInput: (v) => (v.trim().length >= 3 ? undefined : "Use at least 3 letters"),
       })
       if (phrase) await updateSetting("listening.wakePhrase", phrase)
-      const endWord = await vscode.window.showInputBox({
-        title: "End word (optional)",
-        prompt: `Say this to finish a command immediately, e.g. "over" or "execute". Leave empty to finish by pausing ${s.pauseSeconds}s. A pause always works too.`,
-        value: s.endWord,
-        ignoreFocusOut: true,
-      })
-      if (endWord !== undefined) await updateSetting("listening.endWord", endWord)
       const confirm = await vscode.window.showQuickPick(
         [
           {
@@ -645,7 +705,58 @@ class VoiceController {
       )
       if (confirm) await updateSetting("confirmation.mode", confirm.id)
     }
+    await this.chooseCommandEndings()
     await this.context.globalState.update("digitalTwinVoice.listeningChosen", true)
+    await this.sendState()
+  }
+
+  /** How a spoken command ends: pause behaviour, execute / cancel / terminate words. */
+  async chooseCommandEndings(): Promise<void> {
+    const s = settings()
+    const pause = await vscode.window.showQuickPick(
+      [
+        {
+          label: "A pause is just a pause",
+          description: "recommended",
+          detail: "Think as long as you like; the command runs when you say the execute word or tap.",
+          id: "nothing",
+        },
+        { label: "A long pause runs the command", description: `${s.pauseSeconds}s of silence`, id: "execute" },
+        { label: "A long pause cancels the command", description: `${s.pauseSeconds}s of silence`, id: "cancel" },
+      ],
+      { title: "How does a command end? · pauses", ignoreFocusOut: true },
+    )
+    if (pause) await updateSetting("listening.pauseAction", pause.id)
+    const endWord = await vscode.window.showInputBox({
+      title: "Execute word",
+      prompt: 'Say this to run the command, e.g. "execute" or "go ahead". Empty = end only by pause or tap.',
+      value: s.endWord || "execute",
+      ignoreFocusOut: true,
+    })
+    if (endWord !== undefined) await updateSetting("listening.endWord", endWord)
+    const cancelWord = await vscode.window.showInputBox({
+      title: "Cancel word",
+      prompt: 'Say this to drop the command you are speaking. Anything works, e.g. "cancel" or "bobono".',
+      value: s.cancelWord || "cancel",
+      ignoreFocusOut: true,
+    })
+    if (cancelWord !== undefined) await updateSetting("listening.cancelWord", cancelWord)
+    const terminateWord = await vscode.window.showInputBox({
+      title: "Terminate word (optional)",
+      prompt: "Say this to stop everything: listening, voice brains, speech engine, remote. Leave empty to disable.",
+      value: s.terminateWord,
+      ignoreFocusOut: true,
+    })
+    if (terminateWord !== undefined) await updateSetting("listening.terminateWord", terminateWord)
+    if (pause && pause.id !== "nothing") {
+      const secs = await vscode.window.showInputBox({
+        title: "Long pause length (seconds)",
+        value: String(s.pauseSeconds),
+        ignoreFocusOut: true,
+        validateInput: (v) => (isFinite(Number(v)) && Number(v) >= 1.5 && Number(v) <= 60 ? undefined : "1.5 to 60"),
+      })
+      if (secs) await updateSetting("listening.pauseSeconds", Number(secs))
+    }
     await this.sendState()
   }
 
@@ -761,7 +872,13 @@ class VoiceController {
 
   // ---------------------------------------------------------------- pipeline
 
-  private async handleAudio(base64: string, mime: string, hint: string, purpose: "command" | "wake"): Promise<void> {
+  private async handleAudio(
+    base64: string,
+    mime: string,
+    hint: string,
+    purpose: "command" | "wake" | "chunk",
+    meta: { captureId: string; seq: number } = { captureId: "", seq: 0 },
+  ): Promise<void> {
     const s = settings()
     const provider = this.resolveProvider()
     let text: string
@@ -771,6 +888,7 @@ class VoiceController {
       const audio = Buffer.from(base64, "base64")
       if (audio.length < 1000) {
         if (purpose === "command") this.phase("idle", "Too short, try again")
+        if (purpose === "chunk") this.broadcast({ type: "chunk", captureId: meta.captureId, seq: meta.seq, text: "" })
         return
       }
       if (purpose === "command")
@@ -802,8 +920,17 @@ class VoiceController {
           this.output.appendLine(`[wake] ${errorText(err)}`)
           this.broadcast({ type: "wakeResult", matched: false, error: errorText(err) })
           return
+        } else if (purpose === "chunk") {
+          this.output.appendLine(`[chunk] ${errorText(err)}`)
+          this.broadcast({ type: "chunk", captureId: meta.captureId, seq: meta.seq, text: "", error: errorText(err) })
+          return
         } else throw err
       }
+    }
+    if (purpose === "chunk") {
+      // Live piece of a command being spoken; the panel assembles and decides.
+      this.broadcast({ type: "chunk", captureId: meta.captureId, seq: meta.seq, text })
+      return
     }
     if (purpose === "wake") {
       const after = matchWake(text, s.wakePhrase, s.wakeAliases)
@@ -824,6 +951,17 @@ class VoiceController {
   private async handleTranscript(raw: string): Promise<void> {
     const s = settings()
     let text = raw.trim()
+    if (s.terminateWord && containsWord(text, s.terminateWord)) {
+      this.output.appendLine(`[terminate] "${s.terminateWord}" heard`)
+      await this.stopEverything()
+      return
+    }
+    if (s.cancelWord && (endsWithWord(text, s.cancelWord) || normalizeEq(text, s.cancelWord))) {
+      this.output.appendLine(`[cancel] "${s.cancelWord}" heard`)
+      this.cancelInflight()
+      this.broadcast({ type: "actions", heard: text, items: [], needsConfirm: false, countdown: 0, say: "Cancelled." })
+      return
+    }
     if (s.endWord) text = stripEndWord(text, s.endWord)
     this.broadcast({ type: "transcript", text })
     if (!text) {
@@ -1007,4 +1145,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   // subscriptions handle cleanup
+}
+
+function normalizeEq(a: string, b: string): boolean {
+  return (
+    a
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim() === b.toLowerCase().trim()
+  )
 }

@@ -8,6 +8,8 @@ export type SpeechProvider = "auto" | "server" | "browser" | "openai" | "deepgra
 export type ConcreteProvider = Exclude<SpeechProvider, "auto">
 export type ListeningMode = "pushToTalk" | "wakeWord"
 export type ConfirmationMode = "ask" | "countdown" | "auto"
+/** What a long pause does while a command is being captured. */
+export type PauseAction = "nothing" | "execute" | "cancel"
 /** What turns speech into actions: the Messages API with a key, or the user's Claude account via headless Claude Code. */
 export type Brain = "auto" | "claudeAccount" | "apiKey"
 
@@ -27,6 +29,9 @@ export interface Settings {
   wakePhrase: string
   wakeAliases: string[]
   endWord: string
+  cancelWord: string
+  terminateWord: string
+  pauseAction: PauseAction
   pauseSeconds: number
   maxCommandSeconds: number
   autoStart: boolean
@@ -53,9 +58,12 @@ export function settings(): Settings {
     listeningMode: c.get<ListeningMode>("listening.mode", "pushToTalk"),
     wakePhrase: c.get<string>("listening.wakePhrase", "Hey Twin").trim() || "Hey Twin",
     wakeAliases: c.get<string[]>("listening.wakeAliases", []).filter((s) => s && s.trim()),
-    endWord: c.get<string>("listening.endWord", "").trim(),
-    pauseSeconds: clamp(c.get<number>("listening.pauseSeconds", 6), 1.5, 30),
-    maxCommandSeconds: clamp(c.get<number>("listening.maxCommandSeconds", 60), 10, 300),
+    endWord: c.get<string>("listening.endWord", "execute").trim(),
+    cancelWord: c.get<string>("listening.cancelWord", "cancel").trim(),
+    terminateWord: c.get<string>("listening.terminateWord", "").trim(),
+    pauseAction: c.get<PauseAction>("listening.pauseAction", "nothing"),
+    pauseSeconds: clamp(c.get<number>("listening.pauseSeconds", 6), 1.5, 60),
+    maxCommandSeconds: clamp(c.get<number>("listening.maxCommandSeconds", 120), 10, 600),
     autoStart: c.get<boolean>("listening.autoStart", true),
     chime: c.get<boolean>("listening.chime", true),
     preferOnDevice: c.get<boolean>("listening.preferOnDevice", true),
@@ -81,7 +89,10 @@ export const EDITABLE_SETTINGS: Record<string, (v: unknown) => unknown | undefin
           .slice(0, 10)
       : undefined,
   "listening.endWord": (v) => (typeof v === "string" ? v.trim().slice(0, 30) : undefined),
-  "listening.pauseSeconds": (v) => (typeof v === "number" && isFinite(v) ? clamp(v, 1.5, 30) : undefined),
+  "listening.cancelWord": (v) => (typeof v === "string" ? v.trim().slice(0, 30) : undefined),
+  "listening.terminateWord": (v) => (typeof v === "string" ? v.trim().slice(0, 30) : undefined),
+  "listening.pauseAction": (v) => (v === "nothing" || v === "execute" || v === "cancel" ? v : undefined),
+  "listening.pauseSeconds": (v) => (typeof v === "number" && isFinite(v) ? clamp(v, 1.5, 60) : undefined),
   "listening.autoStart": (v) => (typeof v === "boolean" ? v : undefined),
   "listening.chime": (v) => (typeof v === "boolean" ? v : undefined),
   "listening.enhanceMic": (v) => (typeof v === "boolean" ? v : undefined),
@@ -189,6 +200,11 @@ export interface VoiceSeed {
   enabled?: boolean
   listeningMode?: "pushToTalk" | "wakeWord"
   wakePhrase?: string
+  pauseAction?: PauseAction
+  endWord?: string
+  cancelWord?: string
+  terminateWord?: string
+  pauseSeconds?: number
   brain?: "claudeAccount" | "apiKey"
   anthropicApiKey?: string
 }
@@ -247,4 +263,20 @@ export function matchWake(text: string, phrase: string, aliases: string[]): stri
     }
   }
   return null
+}
+
+/** True when the text is the word or ends with it (spoken punctuation tolerated). */
+export function endsWithWord(text: string, word: string): boolean {
+  const w = normalizeSpeech(word)
+  if (!w) return false
+  const t = normalizeSpeech(text)
+  return t === w || t.endsWith(" " + w)
+}
+
+/** True when the word appears anywhere as a whole phrase. */
+export function containsWord(text: string, word: string): boolean {
+  const w = normalizeSpeech(word)
+  if (!w) return false
+  const t = normalizeSpeech(text)
+  return t === w || t.startsWith(w + " ") || t.endsWith(" " + w) || t.includes(" " + w + " ")
 }

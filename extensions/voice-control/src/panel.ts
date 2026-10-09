@@ -323,8 +323,11 @@ ${remoteHead}
       <label>Understands you with <select data-setting="brain"><option value="auto">Auto (key if set, else Claude account)</option><option value="claudeAccount">My Claude account (terminal login)</option><option value="apiKey">Anthropic API key</option></select></label>
       <label>Listening <select data-setting="listening.mode"><option value="pushToTalk">Push-to-talk</option><option value="wakeWord">Wake word (hands-free)</option></select></label>
       <label>Wake phrase <input data-setting="listening.wakePhrase" type="text" placeholder="Hey Twin"></label>
-      <label>End word (optional) <input data-setting="listening.endWord" type="text" placeholder="e.g. over"></label>
-      <label>Pause that ends a command (s) <input data-setting="listening.pauseSeconds" type="number" min="1.5" max="30" step="0.5"></label>
+      <label>A long pause… <select data-setting="listening.pauseAction"><option value="nothing">is just a pause (end with the execute word or a tap)</option><option value="execute">runs the command</option><option value="cancel">cancels the command</option></select></label>
+      <label>Execute word <input data-setting="listening.endWord" type="text" placeholder="execute"></label>
+      <label>Cancel word <input data-setting="listening.cancelWord" type="text" placeholder="cancel"></label>
+      <label>Terminate word (stops everything) <input data-setting="listening.terminateWord" type="text" placeholder="off"></label>
+      <label>Long pause (s) <input data-setting="listening.pauseSeconds" type="number" min="1.5" max="60" step="0.5"></label>
       <label>Confirmation <select data-setting="confirmation.mode"><option value="ask">Ask every time</option><option value="countdown">Show, then run after countdown</option><option value="auto">Run immediately</option></select></label>
       <label>Countdown (s) <input data-setting="confirmation.countdownSeconds" type="number" min="2" max="30" step="1"></label>
       <label>Speech engine <select data-setting="speech.provider"><option value="auto">Auto (built-in server if available)</option><option value="server">Built-in server (Whisper, any browser)</option><option value="browser">Browser (free, Chrome/Edge/Safari)</option><option value="openai">OpenAI</option><option value="deepgram">Deepgram</option></select></label>
@@ -351,6 +354,7 @@ ${remoteHead}
   <section class="card" id="agentsCard">
     <div class="label">Claude agents &amp; voice processes <a href="#" id="btnRefreshProcs" class="small">refresh</a></div>
     <ul id="processes" class="procs"><li class="muted">loading…</li></ul>
+    <div id="watchers" class="muted small"></div>
     <div class="row">
       <button class="danger" id="btnStopAll" title="Stop listening everywhere, kill headless voice brains, stop the speech engine and the phone remote">Stop everything</button>
       <span class="muted small">Per row: Stop = graceful, Kill = immediate. Claude Code sessions in terminals are listed too.</span>

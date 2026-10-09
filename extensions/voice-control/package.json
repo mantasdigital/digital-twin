@@ -2,7 +2,7 @@
   "name": "digital-twin-voice",
   "displayName": "Digital Twin Voice Control",
   "description": "Talk to your Digital Twin: open terminals, run commands, open folders, download files and hand tasks to Claude Code by voice.",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "publisher": "digital-twin",
   "license": "MIT",
   "private": true,
@@ -202,23 +202,23 @@
         },
         "digitalTwinVoice.listening.endWord": {
           "type": "string",
-          "default": "",
+          "default": "execute",
           "order": 13,
-          "description": "Optional word that ends a command immediately (e.g. \"over\" or \"execute\"). Leave empty to rely on the pause only. A long pause always works, with or without an end word."
+          "description": "Word that ends a command and runs it (default \"execute\"). Leave empty to end commands only by pause or tap."
         },
         "digitalTwinVoice.listening.pauseSeconds": {
           "type": "number",
           "default": 6,
           "minimum": 1.5,
-          "maximum": 30,
+          "maximum": 60,
           "order": 14,
-          "description": "Seconds of silence that end a command. Generous by default so you can think mid-sentence."
+          "description": "Length of a long pause in seconds. What it does is set by listening.pauseAction (also the gap after which a chunk is transcribed for live feedback)."
         },
         "digitalTwinVoice.listening.maxCommandSeconds": {
           "type": "number",
-          "default": 60,
+          "default": 120,
           "minimum": 10,
-          "maximum": 300,
+          "maximum": 600,
           "order": 15,
           "description": "Hard limit for one command."
         },
@@ -285,6 +285,34 @@
           "default": true,
           "order": 19,
           "description": "Boost quiet and whispered speech: automatic gain, compression and noise suppression on the microphone before it reaches the speech engine."
+        },
+        "digitalTwinVoice.listening.pauseAction": {
+          "type": "string",
+          "default": "nothing",
+          "enum": [
+            "nothing",
+            "execute",
+            "cancel"
+          ],
+          "order": 13,
+          "enumDescriptions": [
+            "A pause is just a gap in the sentence; the command ends with the execute word or a tap (default).",
+            "A long pause ends the command and runs it.",
+            "A long pause cancels the command."
+          ],
+          "description": "What a long pause does while you are speaking a command."
+        },
+        "digitalTwinVoice.listening.cancelWord": {
+          "type": "string",
+          "default": "cancel",
+          "order": 14,
+          "description": "Word that drops the command you are speaking (or a pending confirmation). Any word works, e.g. \"bobono\"."
+        },
+        "digitalTwinVoice.listening.terminateWord": {
+          "type": "string",
+          "default": "",
+          "order": 15,
+          "description": "Word that stops everything: listening on all devices, voice brains, speech engine and remote. Empty = off."
         }
       }
     }

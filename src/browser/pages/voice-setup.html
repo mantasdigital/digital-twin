@@ -57,6 +57,19 @@
             </fieldset>
 
             <fieldset>
+              <legend>{{I18N_VOICE_END_LABEL}}</legend>
+              <label><input type="radio" name="pause-action" value="nothing" checked /> {{I18N_VOICE_PAUSE_NOTHING}}</label>
+              <label><input type="radio" name="pause-action" value="execute" /> {{I18N_VOICE_PAUSE_EXECUTE}}</label>
+              <label><input type="radio" name="pause-action" value="cancel" /> {{I18N_VOICE_PAUSE_CANCEL}}</label>
+              <div class="indent grid2">
+                <label>{{I18N_VOICE_EXECUTE_WORD}} <input class="password text" type="text" name="execute-word" value="execute" maxlength="30" /></label>
+                <label>{{I18N_VOICE_CANCEL_WORD}} <input class="password text" type="text" name="cancel-word" value="cancel" maxlength="30" /></label>
+                <label>{{I18N_VOICE_TERMINATE_WORD}} <input class="password text" type="text" name="terminate-word" value="" maxlength="30" placeholder="—" /></label>
+                <label>{{I18N_VOICE_PAUSE_SECONDS}} <input class="password text" type="number" name="pause-seconds" value="6" min="1.5" max="60" step="0.5" /></label>
+              </div>
+            </fieldset>
+
+            <fieldset>
               <legend>{{I18N_VOICE_BRAIN_LABEL}}</legend>
               <label
                 ><input type="radio" name="brain" value="claudeAccount" checked /> {{I18N_VOICE_BRAIN_ACCOUNT}}</label

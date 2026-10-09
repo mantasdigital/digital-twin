@@ -23,6 +23,11 @@ export interface VoiceSeed {
   enabled: boolean
   listeningMode: "pushToTalk" | "wakeWord"
   wakePhrase?: string
+  pauseAction?: "nothing" | "execute" | "cancel"
+  endWord?: string
+  cancelWord?: string
+  terminateWord?: string
+  pauseSeconds?: number
   brain: "claudeAccount" | "apiKey"
   anthropicApiKey?: string
 }
@@ -43,6 +48,14 @@ const render = async (req: Request, error?: Error): Promise<string> => {
     "VOICE_LISTENING_PTT",
     "VOICE_LISTENING_WAKE",
     "VOICE_WAKE_NOTE",
+    "VOICE_END_LABEL",
+    "VOICE_PAUSE_NOTHING",
+    "VOICE_PAUSE_EXECUTE",
+    "VOICE_PAUSE_CANCEL",
+    "VOICE_EXECUTE_WORD",
+    "VOICE_CANCEL_WORD",
+    "VOICE_TERMINATE_WORD",
+    "VOICE_PAUSE_SECONDS",
     "VOICE_BRAIN_LABEL",
     "VOICE_BRAIN_ACCOUNT",
     "VOICE_BRAIN_KEY",
@@ -71,6 +84,11 @@ interface VoiceSetupBody {
   voice?: string
   listening?: string
   "wake-phrase"?: string
+  "pause-action"?: string
+  "execute-word"?: string
+  "cancel-word"?: string
+  "terminate-word"?: string
+  "pause-seconds"?: string
   brain?: string
   "anthropic-key"?: string
   skip?: string
@@ -101,6 +119,14 @@ router.post<{}, string, VoiceSetupBody | undefined, { to?: string }>(
         enabled: sanitizeString(body.voice) !== "off",
         listeningMode: sanitizeString(body.listening) === "wakeWord" ? "wakeWord" : "pushToTalk",
         wakePhrase: sanitizeString(body["wake-phrase"]).slice(0, 40) || undefined,
+        pauseAction:
+          (["nothing", "execute", "cancel"].find(
+            (v) => v === sanitizeString(body["pause-action"]),
+          ) as VoiceSeed["pauseAction"]) || "nothing",
+        endWord: sanitizeString(body["execute-word"]).slice(0, 30),
+        cancelWord: sanitizeString(body["cancel-word"]).slice(0, 30),
+        terminateWord: sanitizeString(body["terminate-word"]).slice(0, 30),
+        pauseSeconds: Math.min(60, Math.max(1.5, Number(sanitizeString(body["pause-seconds"])) || 6)),
         brain,
         anthropicApiKey: key || undefined,
       }

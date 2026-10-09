@@ -449,3 +449,10 @@ button.danger {
 .terminals li a:hover {
   opacity: 1;
 }
+
+.warn {
+  color: var(--danger) !important;
+}
+.procs li.watcher {
+  border-left: 3px solid var(--danger);
+}

@@ -39,5 +39,13 @@
   "VOICE_SUBMIT": "SAVE & CONTINUE",
   "VOICE_SKIP": "Skip for now",
   "VOICE_BAD_KEY": "Anthropic API keys start with sk-ant-.",
-  "VOICE_KEY_REQUIRED": "Enter an API key, or choose the Claude account option."
+  "VOICE_KEY_REQUIRED": "Enter an API key, or choose the Claude account option.",
+  "VOICE_END_LABEL": "How a spoken command ends",
+  "VOICE_PAUSE_NOTHING": "A pause is just a pause: the command runs when I say the execute word or tap (recommended)",
+  "VOICE_PAUSE_EXECUTE": "A long pause runs the command",
+  "VOICE_PAUSE_CANCEL": "A long pause cancels the command",
+  "VOICE_EXECUTE_WORD": "Execute word",
+  "VOICE_CANCEL_WORD": "Cancel word",
+  "VOICE_TERMINATE_WORD": "Terminate word (stops everything; optional)",
+  "VOICE_PAUSE_SECONDS": "Long pause (seconds)"
 }

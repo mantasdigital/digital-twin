@@ -42,3 +42,18 @@
 .voice-form .secondary {
   opacity: 0.7;
 }
+
+.voice-form .grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.voice-form .grid2 label {
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.voice-form .grid2 input {
+  margin-top: 4px;
+}

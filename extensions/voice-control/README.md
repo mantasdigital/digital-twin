@@ -28,9 +28,21 @@ planned actions are always shown before or while they run.
 | **Push-to-talk** (default) | Tap the mic, `Ctrl+Shift+Space`, or the status-bar item | Nothing is heard until you start it. |
 | **Wake word** | Say the wake phrase (default "Hey Twin"), then the command | Keeps the mic open while the panel is visible. Fuzzy phrase match, aliases for common mishearings, muted while the panel speaks, one active listener across devices. Say "stop listening" to disarm. `Ctrl+Shift+Alt+Space` toggles. |
 
-A command ends when you **pause** (default 6 s, adjustable 1.5–30 s), say the
-optional **end word** (e.g. "over"), tap again, or hit the 60 s limit. The
-pause always works, with or without an end word.
+**How a command ends** is chosen at setup and editable later:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `listening.pauseAction` | `nothing` | A long pause is just a pause (`nothing`), runs the command (`execute`) or cancels it (`cancel`). |
+| `listening.pauseSeconds` | 6 | Length of a long pause. |
+| `listening.endWord` | `execute` | Say it to run the command. Empty = end only by pause or tap. |
+| `listening.cancelWord` | `cancel` | Say it to drop the command (any word, e.g. "bobono"). Also cancels a pending confirmation. |
+| `listening.terminateWord` | *(empty)* | Say it to stop everything. |
+| `listening.maxCommandSeconds` | 120 | Hard limit. A tap always ends a command too. |
+
+With the built-in, OpenAI or Deepgram engines the capture is chunked: every
+short silence sends a chunk for transcription, the text accumulates live under
+"Heard", and the words above are detected in that text, so they work in every
+browser.
 
 ## Confirmation
 
@@ -107,6 +119,9 @@ the phone) or in VS Code settings under `digitalTwinVoice.*`.
 prompt also offers "Turn off".
 
 ## Stopping things
+
+The agents card also shows the live inotify **file watcher** count with the
+processes holding watches (Railway stops containers that run out).
 
 The panel's **Claude agents & voice processes** card lists every Claude Code
 session, headless voice brain, their child processes and the built-in speech
