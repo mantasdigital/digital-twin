@@ -39,6 +39,7 @@ A production-ready Railway template providing browser-based VS Code (code-server
 | `DEEPGRAM_API_KEY` | No | - | Optional Deepgram speech-to-text for Voice Control |
 | `DIGITAL_TWIN_BUNDLED_EXTENSIONS` | No | `on` | `off` ships without the Voice Control extension |
 | `DIGITAL_TWIN_STT_MODEL` | No | `base` | Built-in speech model baked into the image (`tiny`/`base`/`small`/`medium`) |
+| `DIGITAL_TWIN_WATCH_WARN` / `DIGITAL_TWIN_WATCH_KILL` | No | `150000` / `400000` | inotify guard thresholds (Railway stops containers that exhaust file watchers); `DIGITAL_TWIN_WATCH_GUARD=off` disables |
 
 ---
 
@@ -81,5 +82,7 @@ $HOME/.claude/local       <- Claude Code from volume
 | `stt/whisper_worker.py` | Built-in speech-to-text worker (faster-whisper, own venv at /opt/digital-twin/stt/venv) |
 | `extensions/voice-control/` | Voice Control extension source (built into a VSIX by the Dockerfile, installed on boot by the entrypoint) |
 | `src/node/routes/voiceSetup.ts` | Post-2FA per-user Voice Control defaults page (`/voice-setup`), writes a seed the extension consumes |
+| `scripts/ensure-vscode-settings.cjs` | Boot-time merge of safe VS Code defaults (watcher excludes) into the user's settings.json |
+| `scripts/watch-inotify.sh` | Background inotify guard: logs top consumers, stops VS Code's watcher before Railway stops the container |
 | `scripts/diagnose-volume.sh` | Read-only check for "workspace empty after redeploy": volume location, opened folder, candidate workspaces, verdict |
 | `scripts/rescue-ephemeral-home.sh` | One-time rescue of data written to the ephemeral layer on legacy deployments; run inside the container before redeploy |

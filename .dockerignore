@@ -24,3 +24,5 @@ extensions/voice-control/*.vsix
 
 # Built-in speech-to-text worker
 !stt/**
+!scripts/ensure-vscode-settings.cjs
+!scripts/watch-inotify.sh

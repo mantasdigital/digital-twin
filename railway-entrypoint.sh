@@ -459,6 +459,21 @@ if [ -d "$HOME/entrypoint.d" ]; then
 fi
 
 # ============================================================================
+# FILE WATCHER PROTECTION
+# Railway stops containers that use too many inotify watches; VS Code takes
+# one per directory of the opened folder. Add strong watcher excludes to the
+# user's settings (their own values win) and start a guard that logs the top
+# consumers and, as a last resort, stops VS Code's watcher process.
+# ============================================================================
+
+if [ -f /opt/digital-twin/ensure-vscode-settings.cjs ]; then
+    node /opt/digital-twin/ensure-vscode-settings.cjs 2>&1 | sed 's/^/→ /' || true
+fi
+if [ -f /opt/digital-twin/watch-inotify.sh ] && [ "${DIGITAL_TWIN_WATCH_GUARD:-on}" != "off" ]; then
+    bash /opt/digital-twin/watch-inotify.sh &
+fi
+
+# ============================================================================
 # BUNDLED EXTENSIONS
 # The image ships private extensions (Voice Control) as VSIX files. Install
 # each one into the volume's extensions dir once per version so every deploy

@@ -148,6 +148,26 @@ IDE ran as root, or in `/home/digital-twin` on an affected image) are gone
 after a redeploy; that is what the rescue script below prevents for the
 *next* redeploy, so run it first.
 
+### "Container stopped: Too many file watchers in use"
+
+Railway stops a container that uses too many inotify file watchers. VS Code
+takes one watch per directory of the opened folder, so a workspace with many
+projects reaches hundreds of thousands (a 103,000-directory workspace held
+428,000 watches, against a kernel limit of 524,288). Three protections ship
+with the image:
+
+- Boot adds strong `files.watcherExclude` defaults to the user's settings
+  (`node_modules`, `.git`, `dist`, `build`, caches, `venv`, …); your own values
+  always win (`scripts/ensure-vscode-settings.cjs`).
+- A guard logs the top consumers above `DIGITAL_TWIN_WATCH_WARN` (150000)
+  and, above `DIGITAL_TWIN_WATCH_KILL` (400000), stops VS Code's watcher
+  process so the container survives (`DIGITAL_TWIN_WATCH_GUARD=off` disables).
+- The Voice Control panel shows the live watcher count and the processes
+  holding them, with Stop/Kill.
+
+If you still hit it: open one project folder instead of the whole workspace
+(File → Open Folder), and stop dev servers or test runners in watch mode.
+
 ### Upgrading an existing server (do this before you redeploy it)
 
 Servers created before October 2026 with a legacy mount path (`/home/clauder`)

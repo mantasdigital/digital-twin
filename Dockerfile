@@ -162,6 +162,7 @@ COPY --from=builder /qr-layout/qrcode /usr/lib/code-server/node_modules/qrcode
 COPY --from=voice-builder /ext/digital-twin-voice-*.vsix /opt/digital-twin/extensions/
 
 COPY scripts/patch-webview-microphone.py /opt/digital-twin/patch-webview-microphone.py
+COPY scripts/ensure-vscode-settings.cjs scripts/watch-inotify.sh /opt/digital-twin/
 RUN python3 /opt/digital-twin/patch-webview-microphone.py /usr/lib/code-server || echo "WARNING: webview microphone patch incomplete (see above)"
 
 # ============================================================================
